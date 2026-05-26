@@ -1,6 +1,6 @@
 # ECHO: Terminal Agents Learn World Models for Free
 
-[Paper (PDF)](echo.pdf)
+[Paper (PDF)](echo.pdf), [arXiv](https://arxiv.org/abs/2605.24517)
 
 ECHO is an environment cross-entropy hybrid objective, which trains terminal agents by combining policy-gradient RL with an on-policy cross-entropy loss for predicting environment tokens.
 
