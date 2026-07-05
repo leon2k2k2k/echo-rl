@@ -2,18 +2,18 @@ diff --git a/skyrl/backends/skyrl_train/inference_engines/base.py b/skyrl/backen
 index 1ec593aa..4a79b312 100644
 --- a/skyrl/backends/skyrl_train/inference_engines/base.py
 +++ b/skyrl/backends/skyrl_train/inference_engines/base.py
-@@ -1,5 +1,10 @@
+@@ -1,6 +1,11 @@
  from abc import ABC, abstractmethod
--from typing import TYPE_CHECKING, Any, Dict, Hashable, List, Optional, TypedDict
-+from typing import TYPE_CHECKING, Any, Dict, Hashable, List, Optional, TypedDict
-+
+ from typing import TYPE_CHECKING, Any, Dict, Hashable, List, Optional, TypedDict
+ 
 +try:
 +    from typing import NotRequired
 +except ImportError:
 +    from typing_extensions import NotRequired
-
++
  if TYPE_CHECKING:
      from skyrl.backends.skyrl_train.weight_sync import WeightUpdateRequest
+     from skyrl.backends.skyrl_train.weight_sync.transfer_strategy import (
 @@ -29,6 +34,9 @@ class InferenceEngineInput(TypedDict):
      sampling_params: Optional[Dict[str, Any]]
      session_ids: Optional[List[Hashable]]
@@ -21,8 +21,8 @@ index 1ec593aa..4a79b312 100644
 +    # Token-only callers can skip response detokenization in inference clients
 +    # that otherwise perform an additional decode round trip.
 +    skip_detokenize: NotRequired[bool]
-
-
+ 
+ 
  class InferenceEngineOutput(TypedDict):
 @@ -39,6 +47,9 @@ class InferenceEngineOutput(TypedDict):
      # represent the same text with tokens. Therefore, for multi-turn generation,
@@ -39,23 +39,23 @@ index f07fb794..7aed2e97 100644
 --- a/skyrl/backends/skyrl_train/inference_servers/remote_inference_client.py
 +++ b/skyrl/backends/skyrl_train/inference_servers/remote_inference_client.py
 @@ -384,6 +384,7 @@ class RemoteInferenceClient:
-
+ 
          session_ids = input_batch.get("session_ids")
          mm_features = input_batch.get("mm_features")
 +        skip_detokenize = bool(input_batch.get("skip_detokenize", False))
          get_logprobs = sampling_params.get("logprobs") is not None
-
+ 
          # Two semaphores decouple the generate and detokenize stages:
 @@ -425,7 +426,10 @@ class RemoteInferenceClient:
                  return (await self.detokenize([token_ids]))[0]
-
+ 
          raw_results = await asyncio.gather(*[_throttled_generate(idx) for idx in range(batch_size)])
 -        responses = await asyncio.gather(*[_throttled_detokenize(r["response_ids"]) for r in raw_results])
 +        if skip_detokenize:
 +            responses = [""] * len(raw_results)
 +        else:
 +            responses = await asyncio.gather(*[_throttled_detokenize(r["response_ids"]) for r in raw_results])
-
+ 
          rollout_expert_indices = [r.get("routed_experts") for r in raw_results]
          has_routed_experts = any(x is not None for x in rollout_expert_indices)
 diff --git a/skyrl/backends/skyrl_train/training_batch.py b/skyrl/backends/skyrl_train/training_batch.py
@@ -65,7 +65,7 @@ index 9fba75d5..480a5fd2 100644
 @@ -502,6 +502,8 @@ def pad_training_input_batch(unpadded_batch: TrainingInputBatch, pad_size: int)
          unpadded_batch.metadata["pad_size"] = 0
          return unpadded_batch
-
+ 
 +    zero_pad_keys = set((unpadded_batch.metadata or {}).get("zero_pad_keys", []))
 +
      # Pad each tensor depending on its type.
@@ -82,14 +82,77 @@ index 9fba75d5..480a5fd2 100644
              additional_dims = tensor.shape[1:]
              padding_tensor = torch.zeros(pad_size, *additional_dims, dtype=tensor.dtype, device=tensor.device)
              new_tensors[key] = torch.cat([tensor, padding_tensor], dim=0)
+diff --git a/skyrl/backends/skyrl_train/workers/fsdp/fsdp_worker.py b/skyrl/backends/skyrl_train/workers/fsdp/fsdp_worker.py
+index 8169b60a..62a7348b 100644
+--- a/skyrl/backends/skyrl_train/workers/fsdp/fsdp_worker.py
++++ b/skyrl/backends/skyrl_train/workers/fsdp/fsdp_worker.py
+@@ -198,6 +198,7 @@ class FSDPPolicyWorkerBase(PolicyWorkerBase):
+             language_model_only=self.cfg.policy.language_model_only,
+             logprobs_chunk_size=self.cfg.logprobs_chunk_size,
+         )
++        self.initialize_aux_policy_modules(wrapped_model, model_config)
+         self._seq_parallel_monkey_patch(model=wrapped_model.model)
+ 
+         if self.cfg.gradient_checkpointing:
+@@ -212,6 +213,9 @@ class FSDPPolicyWorkerBase(PolicyWorkerBase):
+             self.optimizer is not None and self.scheduler is not None
+         ), "FSDP preparation should create optimizer and scheduler"
+ 
++    def initialize_aux_policy_modules(self, wrapped_model, model_config) -> None:
++        return None
++
+     async def init_weight_sync_state(self, inference_engine_client, inference_engine_cfg: "InferenceEngineConfig"):
+         # Call super first to set _transfer_strategy_cls and create sender/receivers
+         await super().init_weight_sync_state(inference_engine_client, inference_engine_cfg)
+diff --git a/skyrl/backends/skyrl_train/workers/model_wrapper.py b/skyrl/backends/skyrl_train/workers/model_wrapper.py
+index ba2069f2..579f128e 100644
+--- a/skyrl/backends/skyrl_train/workers/model_wrapper.py
++++ b/skyrl/backends/skyrl_train/workers/model_wrapper.py
+@@ -236,6 +236,7 @@ class HFModelWrapper(nn.Module):
+         attention_mask: Optional[torch.Tensor] = None,
+         temperature: float = 1.0,
+         return_output=False,
++        return_hidden_states=False,
+         compute_entropy=False,
+         entropy_requires_grad=True,
+         pixel_values: Optional[TensorList] = None,
+@@ -309,15 +310,26 @@ class HFModelWrapper(nn.Module):
+                 sequences_fwd,
+                 attention_mask=attention_mask_fwd,
+                 position_ids=None,
++                output_hidden_states=return_hidden_states,
+                 **vlm_kwargs,
+             )
+         # NOTE (sumanthrh): Once we have position_ids, we don't need attention mask with flash attention.
+         elif self.use_sample_packing and self.attn_implementation == "flash_attention_2":
+             # NOTE (sumanthrh): Don't use attention mask. position_ids is enough.
+             # Not using attention mask leads to higher perf since flash attention varlen func is enabled
+-            output = self.model(sequences_fwd, attention_mask=None, position_ids=position_ids_fwd)
++            output = self.model(
++                sequences_fwd,
++                attention_mask=None,
++                position_ids=position_ids_fwd,
++                output_hidden_states=return_hidden_states,
++            )
+         else:
+-            output = self.model(sequences_fwd, attention_mask=attention_mask_fwd, position_ids=position_ids_fwd)
++            output = self.model(
++                sequences_fwd,
++                attention_mask=attention_mask_fwd,
++                position_ids=position_ids_fwd,
++                output_hidden_states=return_hidden_states,
++            )
+ 
+         logits_BSV = output["logits"]
+         logits_BSV.div_(temperature)
 diff --git a/skyrl/backends/skyrl_train/workers/worker.py b/skyrl/backends/skyrl_train/workers/worker.py
-index 43a73fc2..ce3eec24 100644
+index 43a73fc2..4b1ccae4 100644
 --- a/skyrl/backends/skyrl_train/workers/worker.py
 +++ b/skyrl/backends/skyrl_train/workers/worker.py
 @@ -718,10 +718,16 @@ class PolicyWorkerBase(Worker):
          all_metrics = defaultdict(list)
          all_loss_fn_outputs = []  # Handle separately from scalar metrics
-
+ 
 +        aux_policy_loss_context = self.get_aux_policy_loss_context(data)
 +
          for micro_batch in BatchIterator(data, micro_batch_size, drop_last=False):
@@ -102,12 +165,12 @@ index 43a73fc2..ce3eec24 100644
 +                loss_fn_config=loss_fn_config,
 +                aux_policy_loss_context=aux_policy_loss_context,
              )
-
+ 
              # Extract loss_fn_outputs before reduce_metrics (it's not a scalar metric)
-@@ -748,12 +754,29 @@ class PolicyWorkerBase(Worker):
-
+@@ -748,12 +754,36 @@ class PolicyWorkerBase(Worker):
+ 
          return result
-
+ 
 +    def get_aux_policy_loss_context(self, data: TrainingInputBatch) -> Dict[str, Any]:
 +        return {}
 +
@@ -115,6 +178,10 @@ index 43a73fc2..ce3eec24 100644
 +        self,
 +        *,
 +        action_log_probs: torch.Tensor,
++        model_output: Any,
++        sequences: torch.Tensor,
++        num_actions: int,
++        attention_mask: Optional[torch.Tensor],
 +        policy_loss: torch.Tensor,
 +        experience: Experience,
 +        loss_config: Any,
@@ -123,6 +190,9 @@ index 43a73fc2..ce3eec24 100644
 +        aux_policy_loss_context: Optional[Dict[str, Any]] = None,
 +    ) -> tuple[Optional[torch.Tensor], Dict[str, Any]]:
 +        return None, {}
++
++    def needs_aux_policy_hidden_states(self, loss_config: Any) -> bool:
++        return False
 +
      def _forward_backward_micro(
          self,
@@ -134,12 +204,24 @@ index 43a73fc2..ce3eec24 100644
      ) -> Dict[str, float]:
          """
          Perform forward and backward pass for one micro batch.
-@@ -906,6 +929,17 @@ class PolicyWorkerBase(Worker):
+@@ -814,6 +844,7 @@ class PolicyWorkerBase(Worker):
+                 attention_mask=attention_mask,
+                 temperature=self.cfg.algorithm.temperature,
+                 return_output=True,
++                return_hidden_states=self.needs_aux_policy_hidden_states(loss_config),
+                 compute_entropy=True,
+                 entropy_requires_grad=self.cfg.algorithm.use_entropy_loss,
+                 pixel_values=experience.pixel_values,
+@@ -906,6 +937,21 @@ class PolicyWorkerBase(Worker):
              # NOTE: The KL and entropy loss terms are not pre-scaled,
              # so we just average them across microbatches and DP workers.
              loss = policy_loss * grad_sum_correction_factor + (kl_loss_term - entropy_loss_term) * microbatch_weight
 +            aux_policy_loss, aux_policy_metrics = self.compute_aux_policy_loss(
 +                action_log_probs=action_log_probs,
++                model_output=output,
++                sequences=sequences,
++                num_actions=num_actions,
++                attention_mask=attention_mask,
 +                policy_loss=policy_loss,
 +                experience=experience,
 +                loss_config=loss_config,
@@ -151,8 +233,8 @@ index 43a73fc2..ce3eec24 100644
 +                loss = loss + aux_policy_loss
              unscaled_loss = loss / grad_sum_correction_factor
              self.strategy.backward(loss, self.model, self.optimizer)
-
-@@ -939,6 +973,14 @@ class PolicyWorkerBase(Worker):
+ 
+@@ -939,6 +985,14 @@ class PolicyWorkerBase(Worker):
              }
              for k, v in loss_metrics.items():
                  status["loss_metrics/" + k] = v
@@ -166,13 +248,13 @@ index 43a73fc2..ce3eec24 100644
 +                    status[status_key] = v
              if self.cfg.algorithm.use_kl_loss:
                  status["policy_kl"] = kl_loss.item()
-
+ 
 diff --git a/skyrl/backends/skyrl_train/workers/worker_utils.py b/skyrl/backends/skyrl_train/workers/worker_utils.py
 index cecaccc1..a88e0b0f 100644
 --- a/skyrl/backends/skyrl_train/workers/worker_utils.py
 +++ b/skyrl/backends/skyrl_train/workers/worker_utils.py
 @@ -102,8 +102,26 @@ class BatchIterator:
-
+ 
      @staticmethod
      def batch_to_experience(batch: TrainingInputBatch):
 -        # TODO (sumanthrh): other keys are not permitted right now, can go into info
@@ -216,7 +298,7 @@ index c1d50ad9..6b35d941 100644
      pixel_values: Optional[TensorList] = None
      image_grid_thw: Optional[TensorList] = None
 +    extras: Optional[Dict[str, Any]] = None
-
+ 
      @torch.no_grad()
      def to_device(self, device: torch.device) -> None:
 @@ -102,6 +103,8 @@ class Experience:
@@ -225,50 +307,9 @@ index c1d50ad9..6b35d941 100644
              self.image_grid_thw = self.image_grid_thw.to(device)
 +        if self.extras is not None:
 +            self.extras = {key: to(value, device) for key, value in self.extras.items()}
-
+ 
      def pin_memory(self):
          self.sequences = pin_memory(self.sequences)
-diff --git a/skyrl/train/utils/trainer_utils.py b/skyrl/train/utils/trainer_utils.py
-index 23b53b28..0641502e 100644
---- a/skyrl/train/utils/trainer_utils.py
-+++ b/skyrl/train/utils/trainer_utils.py
-@@ -276,7 +276,6 @@ def dump_per_dataset_eval_results(
-                     "score": concat_generator_outputs["rewards"][i],
-                     "stop_reason": concat_generator_outputs.get("stop_reasons", [None] * len(input_prompts))[i],
-                     "env_class": concat_all_envs[i],
--                    "env_extras": concat_env_extras[i],
-                     "data_source": data_source,
-                 }
-                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-@@ -550,20 +549,13 @@ def get_bad_sample_replacements(good_uids: List[str], bad_uids: List[str]) -> Li
-
- def filter_generator_output(output: GeneratorOutput, kept_indices: List[int]) -> GeneratorOutput:
-     """Filter GeneratorOutput based on kept indices."""
--    filtered = {
--        "prompt_token_ids": [output["prompt_token_ids"][i] for i in kept_indices],
--        "response_ids": [output["response_ids"][i] for i in kept_indices],
--        "rewards": [output["rewards"][i] for i in kept_indices],
--        "loss_masks": [output["loss_masks"][i] for i in kept_indices],
--        "stop_reasons": None,
--        "rollout_metrics": output.get("rollout_metrics"),
--        "rollout_logprobs": (
--            [output["rollout_logprobs"][i] for i in kept_indices] if output["rollout_logprobs"] else None
--        ),
--    }
--
--    if output.get("stop_reasons"):
--        filtered["stop_reasons"] = [output["stop_reasons"][i] for i in kept_indices]
--
-+    filtered = {}
-+    for key, value in output.items():
-+        if key == "rollout_metrics":
-+            filtered[key] = value
-+        elif isinstance(value, list):
-+            filtered[key] = [value[i] for i in kept_indices]
-+        else:
-+            filtered[key] = value
-     return filtered
-
 diff --git a/skyrl/train/entrypoints/main_base.py b/skyrl/train/entrypoints/main_base.py
 index 847ce5e8..804fe8b4 100644
 --- a/skyrl/train/entrypoints/main_base.py
@@ -285,7 +326,7 @@ index 847ce5e8..804fe8b4 100644
 @@ -155,6 +155,9 @@ class BasePPOExp:
          self._decode_server_groups = None
          self._inference_router = None
-
+ 
 +    def get_tokenizer_path(self) -> str:
 +        return self.cfg.trainer.policy.model.path
 +
@@ -293,9 +334,9 @@ index 847ce5e8..804fe8b4 100644
      def get_cfg_as_str(cfg: SkyRLTrainConfig) -> str:
          return get_config_as_yaml_str(cfg)
 @@ -342,18 +345,7 @@ class BasePPOExp:
-
+ 
          return client
-
+ 
 -    def _setup_trainer(self):
 -        """Setup and return the trainer.
 -
@@ -331,6 +372,48 @@ index 847ce5e8..804fe8b4 100644
 +        os.makedirs(self.cfg.trainer.ckpt_path, exist_ok=True)
 +
 +        PolicyWorker, CriticWorker, RefWorker = self.get_worker_classes()
-
+ 
          # NOTE (sumanthrh): Instantiate tracker before trainer init.
          # We have custom validation before this step to give better error messages.
+diff --git a/skyrl/train/utils/trainer_utils.py b/skyrl/train/utils/trainer_utils.py
+index 23b53b28..0641502e 100644
+--- a/skyrl/train/utils/trainer_utils.py
++++ b/skyrl/train/utils/trainer_utils.py
+@@ -276,7 +276,6 @@ def dump_per_dataset_eval_results(
+                     "score": concat_generator_outputs["rewards"][i],
+                     "stop_reason": concat_generator_outputs.get("stop_reasons", [None] * len(input_prompts))[i],
+                     "env_class": concat_all_envs[i],
+-                    "env_extras": concat_env_extras[i],
+                     "data_source": data_source,
+                 }
+                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+@@ -550,21 +549,14 @@ def get_bad_sample_replacements(good_uids: List[str], bad_uids: List[str]) -> Li
+ 
+ def filter_generator_output(output: GeneratorOutput, kept_indices: List[int]) -> GeneratorOutput:
+     """Filter GeneratorOutput based on kept indices."""
+-    filtered = {
+-        "prompt_token_ids": [output["prompt_token_ids"][i] for i in kept_indices],
+-        "response_ids": [output["response_ids"][i] for i in kept_indices],
+-        "rewards": [output["rewards"][i] for i in kept_indices],
+-        "loss_masks": [output["loss_masks"][i] for i in kept_indices],
+-        "stop_reasons": None,
+-        "rollout_metrics": output.get("rollout_metrics"),
+-        "rollout_logprobs": (
+-            [output["rollout_logprobs"][i] for i in kept_indices] if output["rollout_logprobs"] else None
+-        ),
+-    }
+-
+-    if output.get("stop_reasons"):
+-        filtered["stop_reasons"] = [output["stop_reasons"][i] for i in kept_indices]
+-
++    filtered = {}
++    for key, value in output.items():
++        if key == "rollout_metrics":
++            filtered[key] = value
++        elif isinstance(value, list):
++            filtered[key] = [value[i] for i in kept_indices]
++        else:
++            filtered[key] = value
+     return filtered
+ 
+ 

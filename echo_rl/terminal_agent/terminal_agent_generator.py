@@ -21,6 +21,17 @@ from .parsers import check_format_warnings, get_parser
 
 logger = logging.getLogger(__name__)
 
+NEXTLAT_LOSS_TARGETS = {
+    "none",
+    "env_only",
+    "warning_only",
+    "warning_plus_env",
+    "full_observation",
+    "assistant_only",
+    "assistant_plus_env",
+    "all_completion",
+}
+
 
 def truncate_output(output: str, max_chars: int = 6000, strategy: str = "start_end") -> str:
     if len(output) <= max_chars:
@@ -52,6 +63,7 @@ class TerminalTrajectoryOutput:
     world_loss_masks: list[int]
     world_warning_masks: list[int]
     world_env_masks: list[int]
+    nextlat_loss_masks: list[int]
     world_full_observation_count: int
     rollout_logprobs: list[float]
     world_model_only: bool = False
@@ -85,6 +97,10 @@ class TerminalAgentGenerator(GeneratorInterface):
         if world_loss_target not in {"full_observation", "env_only", "warning_only", "warning_plus_env"}:
             raise ValueError(f"Unsupported world_loss_target={generator_cfg.world_loss_target!r}")
         self.world_loss_target = world_loss_target
+        nextlat_loss_target = getattr(generator_cfg, "nextlat_loss_target", "none") or "none"
+        if nextlat_loss_target not in NEXTLAT_LOSS_TARGETS:
+            raise ValueError(f"Unsupported nextlat_loss_target={nextlat_loss_target!r}")
+        self.nextlat_loss_target = nextlat_loss_target
         self._im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
         newline_ids = tokenizer.encode("\n", add_special_tokens=False)
         self._turn_end_tokens = [self._im_end_id, newline_ids[-1]] if self._im_end_id is not None else newline_ids[-1:]
@@ -228,6 +244,7 @@ class TerminalAgentGenerator(GeneratorInterface):
             world_loss_masks=interaction.completion_observation_masks,
             world_warning_masks=interaction.completion_warning_masks,
             world_env_masks=interaction.completion_env_output_masks,
+            nextlat_loss_masks=interaction.completion_nextlat_masks,
             world_full_observation_count=int(interaction.metadata.get("full_observation_body_count", 0)),
             rollout_logprobs=interaction.completion_logprobs,
             world_model_only=bool(env_extra.get("world_model_only", False)),
@@ -293,7 +310,14 @@ class TerminalAgentGenerator(GeneratorInterface):
                 stop_reason = "max_total_tokens"
                 break
 
+            assistant_start = len(interaction.completion_token_ids)
             interaction.append_assistant(add_ids, add_logprobs or [0.0] * len(add_ids), self.tokenizer)
+            if self.nextlat_loss_target in {"assistant_only", "assistant_plus_env", "all_completion"}:
+                self._apply_mask_indices(
+                    interaction.completion_nextlat_masks,
+                    range(assistant_start, len(interaction.completion_token_ids)),
+                    limit=False,
+                )
             if rollout_context_ids is not None:
                 clean_ids, _ = self._strip_thinking_from_tokens(token_ids)
                 rollout_context_ids.extend(clean_ids)
@@ -485,8 +509,9 @@ class TerminalAgentGenerator(GeneratorInterface):
 
         return prefix_len, warning_content_end, content_end
 
-    def _apply_mask_indices(self, mask: list[int], indices: list[int]) -> None:
-        if self.generator_cfg.max_world_model_tokens is not None:
+    def _apply_mask_indices(self, mask: list[int], indices, *, limit: bool = True) -> None:
+        indices = list(indices)
+        if limit and self.generator_cfg.max_world_model_tokens is not None:
             indices = indices[: self.generator_cfg.max_world_model_tokens]
         for idx in indices:
             mask[idx] = 1
@@ -555,6 +580,21 @@ class TerminalAgentGenerator(GeneratorInterface):
             obs_indices = list(range(env_start, env_end))
         self._apply_mask_indices(interaction.completion_observation_masks, obs_indices)
 
+        nextlat_indices: list[int]
+        if self.nextlat_loss_target == "full_observation":
+            nextlat_indices = list(range(span.message_start, span.message_end))
+        elif self.nextlat_loss_target == "warning_only":
+            nextlat_indices = list(range(warning_start, warning_end))
+        elif self.nextlat_loss_target == "warning_plus_env":
+            nextlat_indices = list(range(warning_start, env_end))
+        elif self.nextlat_loss_target in {"env_only", "assistant_plus_env"}:
+            nextlat_indices = list(range(env_start, env_end))
+        elif self.nextlat_loss_target == "all_completion":
+            nextlat_indices = list(range(span.completion_start, span.completion_end))
+        else:
+            nextlat_indices = []
+        self._apply_mask_indices(interaction.completion_nextlat_masks, nextlat_indices)
+
         if rollout_context_ids is not None:
             rollout_context_ids.extend(token_ids)
         return span
@@ -614,6 +654,9 @@ class TerminalAgentGenerator(GeneratorInterface):
         interaction.completion_observation_masks.extend([0] * len(tokens))
         interaction.completion_warning_masks.extend([0] * len(tokens))
         interaction.completion_env_output_masks.extend([0] * len(tokens))
+        interaction.completion_nextlat_masks.extend(
+            [1 if self.nextlat_loss_target == "all_completion" else 0] * len(tokens)
+        )
         interaction.completion_logprobs.extend([0.0] * len(tokens))
         return tokens
 
@@ -716,6 +759,7 @@ class TerminalAgentGenerator(GeneratorInterface):
             world_loss_masks=[0],
             world_warning_masks=[0],
             world_env_masks=[0],
+            nextlat_loss_masks=[0],
             world_full_observation_count=0,
             rollout_logprobs=[0.0],
             world_model_only=bool(env_extra.get("world_model_only", False)),
@@ -739,6 +783,7 @@ class TerminalAgentGenerator(GeneratorInterface):
         interaction.completion_observation_masks = [0]
         interaction.completion_warning_masks = [0]
         interaction.completion_env_output_masks = [0]
+        interaction.completion_nextlat_masks = [0]
         interaction.completion_logprobs = [0.0]
 
     def _has_token_budget(self, interaction: TerminalInteraction, num_tokens: int) -> bool:
@@ -819,6 +864,7 @@ class TerminalAgentGenerator(GeneratorInterface):
         world_loss_masks = [t.world_loss_masks for t in trajectory_outputs]
         world_warning_masks = [t.world_warning_masks for t in trajectory_outputs]
         world_env_masks = [t.world_env_masks for t in trajectory_outputs]
+        nextlat_loss_masks = [t.nextlat_loss_masks for t in trajectory_outputs]
         world_full_observation_counts = [t.world_full_observation_count for t in trajectory_outputs]
         world_model_only = [t.world_model_only for t in trajectory_outputs]
         correct = [t.correct for t in trajectory_outputs]
@@ -840,6 +886,7 @@ class TerminalAgentGenerator(GeneratorInterface):
             "world_loss_masks": world_loss_masks,
             "world_warning_masks": world_warning_masks,
             "world_env_masks": world_env_masks,
+            "nextlat_loss_masks": nextlat_loss_masks,
             "world_full_observation_counts": world_full_observation_counts,
             "world_model_only": world_model_only,
             "correct": correct,

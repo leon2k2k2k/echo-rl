@@ -27,6 +27,11 @@ class EchoAlgorithmConfig(AlgorithmConfig):
     wm_filter_min_valid_tool_call_pct: Optional[float] = None
     wm_filter_min_parse_clean_pct: Optional[float] = None
     wm_filter_min_correct_pct: Optional[float] = None
+    nextlat_coeff: float = 0.0
+    nextlat_mtp_horizon: int = 1
+    nextlat_proj_factor: float = 1.0
+    nextlat_bias: bool = False
+    nextlat_norm_eps: float = 1e-5
 
 
 @dataclass

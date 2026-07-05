@@ -45,6 +45,7 @@ trainer:
     advantage_batch_normalize: false
     loss_reduction: sequence_mean
     world_model_coeff: 0.0
+    nextlat_coeff: 0.0
     world_loss_normalization: full_observation_tokens
   epochs: 2
   update_epochs_per_batch: 1
@@ -79,6 +80,7 @@ generator:
   terminal_output_truncation: start
   add_format_warn: true
   world_loss_target: env_only
+  nextlat_loss_target: none
   thinking_handling: keep_all
   verifier_timeout: 120.0
   length_penalty_coef: 0.0

@@ -43,6 +43,7 @@ class EchoPPOTrainer(RayPPOTrainer):
         world_loss_mask = right_align(generator_output.get("world_loss_masks"), "world_loss_masks")
         world_warning_mask = right_align(generator_output.get("world_warning_masks"), "world_warning_masks")
         world_env_mask = right_align(generator_output.get("world_env_masks"), "world_env_masks")
+        nextlat_loss_mask = right_align(generator_output.get("nextlat_loss_masks"), "nextlat_loss_masks")
 
         counts = generator_output.get("world_full_observation_counts")
         world_full_observation_count = None
@@ -64,6 +65,7 @@ class EchoPPOTrainer(RayPPOTrainer):
         training_input["world_loss_mask"] = world_loss_mask
         training_input["world_warning_mask"] = world_warning_mask
         training_input["world_env_mask"] = world_env_mask
+        training_input["nextlat_loss_mask"] = nextlat_loss_mask
         training_input["world_full_observation_count"] = world_full_observation_count
 
         zero_pad_keys = set(training_input.metadata.get("zero_pad_keys", []))
@@ -72,6 +74,7 @@ class EchoPPOTrainer(RayPPOTrainer):
                 "world_loss_mask",
                 "world_warning_mask",
                 "world_env_mask",
+                "nextlat_loss_mask",
                 "world_full_observation_count",
             }
         )
@@ -201,7 +204,7 @@ class EchoPPOTrainer(RayPPOTrainer):
             for idx in indices:
                 if idx in kept_indices:
                     continue
-                for key in ("world_loss_masks", "world_warning_masks", "world_env_masks"):
+                for key in ("world_loss_masks", "world_warning_masks", "world_env_masks", "nextlat_loss_masks"):
                     if generator_output.get(key) is not None:
                         generator_output[key][idx] = [0] * len(generator_output[key][idx])
 

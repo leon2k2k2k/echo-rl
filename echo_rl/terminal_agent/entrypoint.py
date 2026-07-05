@@ -69,6 +69,16 @@ class TerminalAgentGeneratorConfig(GeneratorConfig):
     add_format_warn: bool = False
     max_world_model_tokens: Optional[int] = None
     world_loss_target: Optional[Literal["full_observation", "env_only", "warning_only", "warning_plus_env"]] = None
+    nextlat_loss_target: Literal[
+        "none",
+        "full_observation",
+        "env_only",
+        "warning_only",
+        "warning_plus_env",
+        "assistant_only",
+        "assistant_plus_env",
+        "all_completion",
+    ] = "none"
     world_loss_on_format_warn: bool = True
     world_model_only_paths: list[str] = field(default_factory=list)
     agent_max_concurrency: int = 32

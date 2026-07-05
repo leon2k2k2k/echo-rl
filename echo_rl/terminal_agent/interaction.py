@@ -25,6 +25,7 @@ class TerminalInteraction:
     completion_observation_masks: list[int] = field(default_factory=list)
     completion_warning_masks: list[int] = field(default_factory=list)
     completion_env_output_masks: list[int] = field(default_factory=list)
+    completion_nextlat_masks: list[int] = field(default_factory=list)
     completion_logprobs: list[float] = field(default_factory=list)
     reward: float = 0.0
     correct: bool = False
@@ -46,6 +47,7 @@ class TerminalInteraction:
         self.completion_observation_masks.extend([0] * len(token_ids))
         self.completion_warning_masks.extend([0] * len(token_ids))
         self.completion_env_output_masks.extend([0] * len(token_ids))
+        self.completion_nextlat_masks.extend([0] * len(token_ids))
         self.completion_logprobs.extend(logprobs)
         return text
 
@@ -59,6 +61,7 @@ class TerminalInteraction:
         observation_masks: list[int] | None = None,
         warning_masks: list[int] | None = None,
         env_output_masks: list[int] | None = None,
+        nextlat_masks: list[int] | None = None,
     ) -> None:
         if len(token_ids) != len(masks) or len(token_ids) != len(logprobs):
             raise ValueError("token_ids, masks, and logprobs must have the same length")
@@ -66,6 +69,7 @@ class TerminalInteraction:
             ("observation_masks", observation_masks),
             ("warning_masks", warning_masks),
             ("env_output_masks", env_output_masks),
+            ("nextlat_masks", nextlat_masks),
         ):
             if extra_masks is not None and len(extra_masks) != len(token_ids):
                 raise ValueError(f"token_ids and {name} must have the same length")
@@ -75,4 +79,5 @@ class TerminalInteraction:
         self.completion_observation_masks.extend(observation_masks or [0] * len(token_ids))
         self.completion_warning_masks.extend(warning_masks or [0] * len(token_ids))
         self.completion_env_output_masks.extend(env_output_masks or [0] * len(token_ids))
+        self.completion_nextlat_masks.extend(nextlat_masks or [0] * len(token_ids))
         self.completion_logprobs.extend(logprobs)
