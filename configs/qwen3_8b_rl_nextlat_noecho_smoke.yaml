@@ -1,4 +1,4 @@
-# Tiny NextLat-only smoke config for the terminal-agent task.
+# Tiny fast-timeout NextLat-only smoke config for the terminal-agent task.
 # This disables the ECHO world-token CE loss and keeps only the NextLat
 # auxiliary loss on environment observation tokens.
 
@@ -91,7 +91,7 @@ generator:
   docker_cpus: 1
   base_temp_dir: ${oc.env:ECHO_RUNTIME_ROOT}/tmp/tbench
   agent_max_concurrency: 32
-  agent_timeout: 300.0
+  agent_timeout: 60.0
   max_concurrent_builds: 1
   max_build_retries: 3
   dataset_num_workers: 4
