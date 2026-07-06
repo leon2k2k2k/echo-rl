@@ -247,6 +247,7 @@ class _SharedTaskImage:
         task_dir.mkdir(parents=True, exist_ok=True)
         _safe_extract_tar(self._task_binary, task_dir)
         self._task = Task(task_dir)
+        _inject_docker_wheelhouse(self._task.paths.environment_dir)
         self._task_env_config = self._task.config.environment
         if self._memory_mb is not None:
             self._task_env_config.memory_mb = self._memory_mb
@@ -472,6 +473,64 @@ def _safe_extract_tar(archive_bytes: bytes, dest_dir: Path) -> None:
 
 def _cache_task_images_enabled() -> bool:
     return os.environ.get("ECHO_CACHE_TASK_IMAGES", "0") == "1"
+
+
+def _docker_wheelhouse_path() -> Path | None:
+    value = os.environ.get("ECHO_DOCKER_WHEELHOUSE")
+    if value:
+        path = Path(value)
+    else:
+        runtime_root = os.environ.get("ECHO_RUNTIME_ROOT")
+        if not runtime_root:
+            return None
+        path = Path(runtime_root) / "docker_wheelhouse"
+    return path if path.is_dir() else None
+
+
+def _inject_docker_wheelhouse(environment_dir: Path) -> None:
+    wheelhouse = _docker_wheelhouse_path()
+    if wheelhouse is None:
+        return
+
+    wheels = [path for path in wheelhouse.iterdir() if path.is_file()]
+    if not wheels:
+        return
+
+    local_dir = environment_dir / ".echo_wheelhouse"
+    if local_dir.exists():
+        shutil.rmtree(local_dir)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    for wheel in wheels:
+        shutil.copy2(wheel, local_dir / wheel.name)
+
+    dockerfile = environment_dir / "Dockerfile"
+    if dockerfile.exists():
+        text = dockerfile.read_text()
+        copy_line = "COPY .echo_wheelhouse /tmp/echo_wheelhouse"
+        if copy_line not in text:
+            lines = text.splitlines()
+            insert_idx = 1
+            for idx, line in enumerate(lines):
+                if line.strip().startswith(("ENV ", "ARG ", "WORKDIR ")):
+                    insert_idx = idx + 1
+            lines.insert(insert_idx, copy_line)
+            text = "\n".join(lines) + "\n"
+            dockerfile.write_text(text)
+
+    for script_name in ("post_install.sh", "base_install.sh"):
+        script = environment_dir / script_name
+        if not script.exists():
+            continue
+        text = script.read_text()
+        text = text.replace(
+            "pip3 install pytest",
+            "pip3 install --no-index --find-links /tmp/echo_wheelhouse pytest",
+        )
+        text = text.replace(
+            "pip install pytest",
+            "pip install --no-index --find-links /tmp/echo_wheelhouse pytest",
+        )
+        script.write_text(text)
 
 
 def _docker_image_exists(image: str) -> bool:

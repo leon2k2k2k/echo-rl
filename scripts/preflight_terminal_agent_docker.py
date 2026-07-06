@@ -40,6 +40,10 @@ async def _run(args: argparse.Namespace) -> int:
     os.environ.setdefault("DOCKER_BUILDKIT", "0")
     os.environ.setdefault("COMPOSE_DOCKER_CLI_BUILD", "0")
     os.environ.setdefault("ECHO_CACHE_TASK_IMAGES", "1")
+    if "ECHO_DOCKER_WHEELHOUSE" not in os.environ:
+        runtime_root = os.environ.get("ECHO_RUNTIME_ROOT")
+        if runtime_root:
+            os.environ["ECHO_DOCKER_WHEELHOUSE"] = str(Path(runtime_root) / "docker_wheelhouse")
 
     rows = _load_environment_rows(args.parquet, args.rows)
     provider = HarborEnvironmentProvider(
@@ -55,6 +59,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"DOCKER_BUILDKIT={os.environ.get('DOCKER_BUILDKIT')}")
     print(f"COMPOSE_DOCKER_CLI_BUILD={os.environ.get('COMPOSE_DOCKER_CLI_BUILD')}")
     print(f"ECHO_CACHE_TASK_IMAGES={os.environ.get('ECHO_CACHE_TASK_IMAGES')}")
+    print(f"ECHO_DOCKER_WHEELHOUSE={os.environ.get('ECHO_DOCKER_WHEELHOUSE')}")
     print(f"max_concurrent_builds={args.max_concurrent_builds}")
 
     t0 = time.monotonic()
