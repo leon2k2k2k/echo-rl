@@ -264,7 +264,12 @@ class _SharedTaskImage:
                 logger.info("Reusing cached task image %s for %s", stable_image, self._task_name)
                 self._task_env_config.docker_image = stable_image
                 self._has_local_cached_image = True
-            elif configured_image == stable_image:
+            elif configured_image and not _docker_image_exists(configured_image):
+                logger.info(
+                    "Ignoring missing configured task image %s for %s; will build it",
+                    configured_image,
+                    self._task_name,
+                )
                 self._task_env_config.docker_image = None
         self._has_external_prebuilt_image = bool(self._task_env_config.docker_image) and not self._has_local_cached_image
         self._is_setup = True
