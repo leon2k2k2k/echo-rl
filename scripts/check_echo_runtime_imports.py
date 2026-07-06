@@ -47,6 +47,8 @@ REQUIRED_DISTS = [
     "fastapi",
     "uvicorn",
     "vllm-router",
+    "setproctitle",
+    "msgspec",
     "pybind11",
     "nixl",
     # SkyRL fsdp deps.
@@ -99,6 +101,8 @@ REQUIRED_IMPORTS = [
     # FSDP + vLLM inference path.
     ("vllm", "vllm"),
     ("vllm_router", "vllm-router"),
+    ("setproctitle", "setproctitle"),
+    ("msgspec", "msgspec"),
     ("flash_attn", "flash-attn"),
     ("flash_attn.bert_padding", "flash-attn"),
     ("nixl", "nixl"),
