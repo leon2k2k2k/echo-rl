@@ -71,6 +71,7 @@ generator:
   parser_name: qwen35
   command_selection: first
   max_turns: 1
+  max_input_length: 1536
   max_context_tokens: 3072
   max_tokens_per_generation: 192
   max_terminal_output_chars: 4000
