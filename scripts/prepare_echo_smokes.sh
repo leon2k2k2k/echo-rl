@@ -32,6 +32,7 @@ required_files=(
   scripts/sync_echo_to_skyrl.sh
   scripts/submit_echo_smokes.sh
   scripts/grep_smoke_metrics.sh
+  scripts/tail_echo_smokes.sh
   slurm/echo_nextlat_smoke.sbatch
 )
 for path in "${required_files[@]}"; do
@@ -62,6 +63,7 @@ bash -n \
   scripts/sync_echo_to_skyrl.sh \
   scripts/submit_echo_smokes.sh \
   scripts/grep_smoke_metrics.sh \
+  scripts/tail_echo_smokes.sh \
   slurm/echo_nextlat_smoke.sbatch
 
 bash scripts/sync_echo_to_skyrl.sh
@@ -74,8 +76,7 @@ Ready to submit:
   bash scripts/submit_echo_smokes.sh
 
 After submission, use the printed job IDs:
-  squeue -j "JOB1,JOB2" -o "%.18i %.10P %.20j %.8T %.10M %.20R"
-  sacct -j "JOB1,JOB2" --format=JobID,JobName%24,State,ExitCode,Elapsed
-  bash scripts/grep_smoke_metrics.sh JOB1
-  bash scripts/grep_smoke_metrics.sh JOB2
+  squeue -u "\${USER:-alex}" -o "%.18i %.10P %.20j %.8T %.10M %.20R"
+  bash scripts/tail_echo_smokes.sh
+  bash scripts/grep_smoke_metrics.sh
 EOF
