@@ -29,6 +29,68 @@ class EchoPPOTrainer(RayPPOTrainer):
             return None
         return float(value.detach().float().sum().cpu().item())
 
+    @staticmethod
+    def _list_sum_for_log(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(sum(value))
+        except TypeError:
+            return None
+
+    @staticmethod
+    def _trajectory_id_for_log(value: Any) -> str:
+        if hasattr(value, "to_string"):
+            return str(value.to_string())
+        return str(value)
+
+    def _log_generator_sample_summaries(self, generator_output: GeneratorOutput) -> None:
+        if not self._policy_metric_logging_enabled():
+            return
+
+        response_ids = generator_output["response_ids"]
+        loss_masks = generator_output.get("loss_masks") or []
+        world_masks = generator_output.get("world_loss_masks") or []
+        warning_masks = generator_output.get("world_warning_masks") or []
+        env_masks = generator_output.get("world_env_masks") or []
+        nextlat_masks = generator_output.get("nextlat_loss_masks") or []
+        trajectory_ids = generator_output.get("trajectory_ids") or []
+        stop_reasons = generator_output.get("stop_reasons") or []
+        metadata = generator_output.get("trajectory_metadata") or []
+
+        no_signal = 0
+        zero_world = 0
+        for i, response in enumerate(response_ids):
+            loss_tokens = self._list_sum_for_log(loss_masks[i] if i < len(loss_masks) else None)
+            world_tokens = self._list_sum_for_log(world_masks[i] if i < len(world_masks) else None)
+            warning_tokens = self._list_sum_for_log(warning_masks[i] if i < len(warning_masks) else None)
+            env_tokens = self._list_sum_for_log(env_masks[i] if i < len(env_masks) else None)
+            nextlat_tokens = self._list_sum_for_log(nextlat_masks[i] if i < len(nextlat_masks) else None)
+            if world_tokens == 0.0:
+                zero_world += 1
+            if all((tokens or 0.0) == 0.0 for tokens in (loss_tokens, world_tokens, warning_tokens, env_tokens, nextlat_tokens)):
+                no_signal += 1
+
+            meta = metadata[i] if i < len(metadata) and isinstance(metadata[i], dict) else {}
+            logger.info(
+                "[policy-train] generator_sample "
+                f"idx={i} trajectory={self._trajectory_id_for_log(trajectory_ids[i]) if i < len(trajectory_ids) else None} "
+                f"path={meta.get('path')} stop_reason={stop_reasons[i] if i < len(stop_reasons) else meta.get('stop_reason')} "
+                f"response_len={len(response)} loss_tokens={loss_tokens} world_tokens={world_tokens} "
+                f"warning_tokens={warning_tokens} env_tokens={env_tokens} nextlat_tokens={nextlat_tokens}"
+            )
+
+        logger.info(
+            "[policy-train] generator_sample_summary "
+            f"batch={len(response_ids)} zero_world_samples={zero_world} no_signal_samples={no_signal}"
+        )
+        self.all_metrics.update(
+            {
+                "generate/zero_world_samples": float(zero_world),
+                "generate/no_signal_samples": float(no_signal),
+            }
+        )
+
     def _training_batch_summary_for_log(self, data: TrainingInputBatch) -> Dict[str, Any]:
         sequences = data.get("sequences")
         seq_len = int(sequences.shape[1]) if sequences is not None and hasattr(sequences, "shape") else None
@@ -53,6 +115,7 @@ class EchoPPOTrainer(RayPPOTrainer):
         }
 
     def convert_to_training_input(self, generator_output: GeneratorOutput, uids: List[str]) -> TrainingInputBatch:
+        self._log_generator_sample_summaries(generator_output)
         training_input = super().convert_to_training_input(generator_output, uids)
         response_length = int(training_input.metadata["response_length"])
         response_ids = generator_output["response_ids"]

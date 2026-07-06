@@ -49,19 +49,21 @@ def compute_world_model_loss(
     world_ce = -action_log_probs
     selected_tokens = world_loss_mask.sum()
 
-    if selected_tokens <= 0:
+    if selected_tokens.detach().item() <= 0:
         zero = action_log_probs.sum() * 0.0
+        zero_detached = zero.detach()
         return zero, {
-            "world_loss_unscaled": zero.detach(),
-            "world_loss_scaled": zero.detach(),
+            "world_loss_unscaled": zero_detached,
+            "world_loss_scaled": zero_detached,
             "world_policy_loss_ratio": None,
             "world_tokens_selected": selected_tokens.detach(),
             "world_tokens_warning": None,
             "world_tokens_env": None,
             "world_tokens_full_observation": selected_tokens.detach(),
-            "world_ce_selected_per_token": zero.detach(),
+            "world_ce_selected_per_token": zero_detached,
             "world_ce_warning_per_token": None,
             "world_ce_env_per_token": None,
+            "world_zero_token": torch.tensor(1.0, device=device),
         }
 
     if config.loss_reduction == "sequence_mean":
@@ -100,6 +102,7 @@ def compute_world_model_loss(
         "world_ce_selected_per_token": (world_ce * world_loss_mask).sum() / selected_den,
         "world_ce_warning_per_token": None,
         "world_ce_env_per_token": None,
+        "world_zero_token": torch.tensor(0.0, device=device),
     }
     if warning_mask is not None:
         warning_mask = warning_mask.to(device).float()

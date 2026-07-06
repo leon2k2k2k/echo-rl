@@ -294,7 +294,16 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             world_loss_unscaled=self._scalar_for_log(world_metrics.get("world_loss_unscaled")),
             world_ce=self._scalar_for_log(world_metrics.get("world_ce_selected_per_token")),
             world_tokens=self._scalar_for_log(world_metrics.get("world_tokens_selected")),
+            zero_world_tokens=self._scalar_for_log(world_metrics.get("world_zero_token")),
         )
+        if self._scalar_for_log(world_metrics.get("world_zero_token")) == 1.0:
+            self._policy_rank_log(
+                "zero_world_tokens",
+                policy_loss=self._scalar_for_log(policy_loss),
+                loss_mask_tokens=self._tensor_sum_for_log(experience.loss_mask),
+                world_model_coeff=world_model_coeff,
+                nextlat_coeff=float(getattr(loss_config, "nextlat_coeff", 0.0) or 0.0),
+            )
         nextlat_scaled = None
         nextlat_metrics: Dict[str, Any] = {}
         nextlat_coeff = float(getattr(loss_config, "nextlat_coeff", 0.0) or 0.0)
@@ -392,6 +401,7 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 "world_tokens": self._scalar_for_log(world_metrics.get("world_tokens_selected")),
                 "world_warning_tokens": self._scalar_for_log(world_metrics.get("world_tokens_warning")),
                 "world_env_tokens": self._scalar_for_log(world_metrics.get("world_tokens_env")),
+                "zero_world_tokens": self._scalar_for_log(world_metrics.get("world_zero_token")),
                 "world_policy_ratio": self._scalar_for_log(world_metrics.get("world_policy_loss_ratio")),
                 "nextlat_loss_scaled": self._scalar_for_log(world_metrics.get("nextlat_loss_scaled")),
                 "nextlat_ratio": self._scalar_for_log(world_metrics.get("nextlat_policy_loss_ratio")),
