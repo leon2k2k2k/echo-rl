@@ -83,6 +83,16 @@ def build_nextlat_token_mask(
     return mask
 
 
+def align_nextlat_token_mask(nextlat_token_mask: torch.Tensor, *, sequence_length: int) -> torch.Tensor:
+    """Right-align a padded sequence mask to the model output sequence length."""
+    if nextlat_token_mask.shape[1] == sequence_length:
+        return nextlat_token_mask
+    if nextlat_token_mask.shape[1] > sequence_length:
+        return nextlat_token_mask[:, -sequence_length:]
+    pad_width = sequence_length - nextlat_token_mask.shape[1]
+    return F.pad(nextlat_token_mask, (pad_width, 0), value=False)
+
+
 def compute_nextlat_mse_loss(
     dynamics_model: NextLatDynamicsModel,
     *,
@@ -106,6 +116,11 @@ def compute_nextlat_mse_loss(
         )
 
     mse_mask = nextlat_token_mask.to(device=hidden_states.device, dtype=torch.bool)
+    if mse_mask.shape[0] != hidden_states.shape[0]:
+        raise RuntimeError(
+            f"NextLat mask batch mismatch: {tuple(mse_mask.shape)} vs hidden {tuple(hidden_states.shape)}"
+        )
+    mse_mask = align_nextlat_token_mask(mse_mask, sequence_length=hidden_states.shape[1])
     selected = mse_mask.sum()
     if selected <= 0:
         zero = hidden_states.sum() * 0.0
