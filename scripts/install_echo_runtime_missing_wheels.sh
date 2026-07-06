@@ -53,7 +53,10 @@ echo "Installing pinned direct wheels with --no-deps..."
   "flash-linear-attention @ https://files.pythonhosted.org/packages/60/ee/a3cba17965482b35c4990af90bad108e82c32edcb59911c37f318b5f4198/flash_linear_attention-0.4.2-py3-none-any.whl" \
   "nixl @ https://files.pythonhosted.org/packages/7b/f8/e5bf11e31bcd42a86d6e5d0b7d166860d73d792ec6e7afbd7f04cf7eca06/nixl-1.0.0-py3-none-any.whl" \
   "nixl-cu12 @ https://files.pythonhosted.org/packages/48/68/f58b0b1aa8d2d03dd8354f6893fa858c77267ddef6cdd2d20868cf0ea88b/nixl_cu12-1.0.0-cp312-cp312-manylinux_2_28_x86_64.whl" \
-  "causal-conv1d @ https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/causal_conv1d-1.6.1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" \
+  "causal-conv1d @ https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/causal_conv1d-1.6.1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+
+echo "Installing flashinfer-jit-cache separately because GitHub release downloads are flaky..."
+"$PY" -m pip install --no-deps --timeout 120 --retries 10 \
   "flashinfer-jit-cache @ https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.6/flashinfer_jit_cache-0.6.6%2Bcu128-cp39-abi3-manylinux_2_28_x86_64.whl"
 
 echo "Ensuring flashinfer-python is present without dependency resolution..."
