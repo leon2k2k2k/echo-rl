@@ -26,6 +26,9 @@ ERROR_RE = re.compile(
     r"(Traceback|RuntimeError|ActorDiedError|RayTaskError|OutOfMemory|CUDA out of memory|SYSTEM_ERROR|SIGKILL|SIGSEGV|NCCL|illegal memory|segmentation fault|Killed)",
     re.IGNORECASE,
 )
+POLICY_RE = re.compile(
+    r"(\[policy-train\]|forward_backward|optim_step|aux_loss|final_loss|policy_loss|world_loss|nextlat_loss)"
+)
 
 
 @dataclass(frozen=True)
@@ -183,6 +186,29 @@ def print_error_search(tar_path: Path, tail: int) -> None:
         print("No explicit OOM/SIG/NCCL/Python traceback lines found in collected Ray logs.")
 
 
+def print_policy_train_search(tar_path: Path, tail: int) -> None:
+    if not tar_path.exists():
+        return
+    hits: list[str] = []
+    with tarfile.open(tar_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile() or member.size == 0:
+                continue
+            if not member.name.endswith((".err", ".out", ".log", ".txt")):
+                continue
+            f = tar.extractfile(member)
+            if f is None:
+                continue
+            text = f.read().decode("utf-8", errors="replace")
+            for line in text.splitlines():
+                if POLICY_RE.search(line):
+                    hits.append(f"{member.name}: {line}")
+    if hits:
+        print("\n".join(hits[-tail:]))
+    else:
+        print("No policy-train worker lines found in collected Ray logs.")
+
+
 def maybe_print_gzip_tail(path: Path, title: str, tail: int) -> None:
     if not path.exists():
         return
@@ -262,6 +288,9 @@ def main() -> int:
 
     print_section("ray error search")
     print_error_search(ray_tar, args.tail)
+
+    print_section("ray policy-train search")
+    print_policy_train_search(ray_tar, args.tail)
 
     final_snapshot = debug_dir / "final_snapshot.log"
     if final_snapshot.exists():
