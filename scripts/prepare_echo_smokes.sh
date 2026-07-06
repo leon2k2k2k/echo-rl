@@ -32,6 +32,9 @@ required_files=(
   configs/qwen3_8b_rl_plain_smoke.yaml
   configs/qwen3_8b_rl_echo_smoke.yaml
   configs/qwen3_8b_rl_nextlat_smoke.yaml
+  configs/qwen3_8b_rl_plain_medium.yaml
+  configs/qwen3_8b_rl_echo_medium.yaml
+  configs/qwen3_8b_rl_nextlat_medium.yaml
   scripts/cluster_env.sh
   scripts/diagnose_echo_smoke_failure.py
   scripts/submit_echo_ablation_smokes.sh

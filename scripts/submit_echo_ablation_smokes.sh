@@ -22,6 +22,7 @@ export PLAIN_PARTITION="${PLAIN_PARTITION:-h01}"
 export ECHO_PARTITION="${ECHO_PARTITION:-a01}"
 export NEXTLAT_PARTITION="${NEXTLAT_PARTITION:-$ECHO_PARTITION}"
 export SUBMIT_MODE="${SUBMIT_MODE:-split-partitions}"
+export RUN_SCALE="${RUN_SCALE:-smoke}"
 export ECHO_LOG_DIR="${ECHO_LOG_DIR:-$ECHO_RUNTIME_ROOT/logs}"
 export ECHO_LOG_POLICY_TRAIN_METRICS="${ECHO_LOG_POLICY_TRAIN_METRICS:-1}"
 mkdir -p "$ECHO_LOG_DIR"
@@ -69,6 +70,29 @@ case "$SUBMIT_MODE" in
     ;;
 esac
 
+case "$RUN_SCALE" in
+  smoke)
+    plain_run_kind="plain-base"
+    echo_run_kind="echo-base"
+    nextlat_run_kind="echo-nextlat"
+    plain_config="echo_configs/qwen3_8b_rl_plain_smoke.yaml"
+    echo_config="echo_configs/qwen3_8b_rl_echo_smoke.yaml"
+    nextlat_config="echo_configs/qwen3_8b_rl_nextlat_smoke.yaml"
+    ;;
+  medium)
+    plain_run_kind="plain-medium"
+    echo_run_kind="echo-medium"
+    nextlat_run_kind="echo-nextlat-medium"
+    plain_config="echo_configs/qwen3_8b_rl_plain_medium.yaml"
+    echo_config="echo_configs/qwen3_8b_rl_echo_medium.yaml"
+    nextlat_config="echo_configs/qwen3_8b_rl_nextlat_medium.yaml"
+    ;;
+  *)
+    echo "error: RUN_SCALE must be smoke or medium; got $RUN_SCALE" >&2
+    exit 2
+    ;;
+esac
+
 if [[ "$SUBMIT_MODE" == "parallel" && "${SBATCH_EXCLUSIVE:-0}" != "1" ]]; then
   cat >&2 <<'EOF'
 warning: SUBMIT_MODE=parallel can collide fixed vLLM ports if Slurm places jobs
@@ -76,30 +100,30 @@ on the same node. Prefer SUBMIT_MODE=split-partitions or set SBATCH_EXCLUSIVE=1.
 EOF
 fi
 
-echo "Submitting ECHO ablation smokes with SUBMIT_MODE=$SUBMIT_MODE"
+echo "Submitting ECHO ablation smokes with RUN_SCALE=$RUN_SCALE SUBMIT_MODE=$SUBMIT_MODE"
 echo "Format: RUN_KIND JOB_ID PARTITION DEPENDENCY CONFIG_PATH"
 
 dependency=""
 if [[ "$SUBMIT_MODE" == "split-partitions" ]]; then
-  submit_one plain-base echo_configs/qwen3_8b_rl_plain_smoke.yaml "$PLAIN_PARTITION"
-  submit_one echo-base echo_configs/qwen3_8b_rl_echo_smoke.yaml "$ECHO_PARTITION"
+  submit_one "$plain_run_kind" "$plain_config" "$PLAIN_PARTITION"
+  submit_one "$echo_run_kind" "$echo_config" "$ECHO_PARTITION"
 elif [[ "$SUBMIT_MODE" == "sequential" ]]; then
-  submit_one plain-base echo_configs/qwen3_8b_rl_plain_smoke.yaml "$PARTITION" "$dependency"
+  submit_one "$plain_run_kind" "$plain_config" "$PARTITION" "$dependency"
   dependency="$SUBMITTED_JOB_ID"
-  submit_one echo-base echo_configs/qwen3_8b_rl_echo_smoke.yaml "$PARTITION" "$dependency"
+  submit_one "$echo_run_kind" "$echo_config" "$PARTITION" "$dependency"
   dependency="$SUBMITTED_JOB_ID"
 else
-  submit_one plain-base echo_configs/qwen3_8b_rl_plain_smoke.yaml "$PARTITION"
-  submit_one echo-base echo_configs/qwen3_8b_rl_echo_smoke.yaml "$PARTITION"
+  submit_one "$plain_run_kind" "$plain_config" "$PARTITION"
+  submit_one "$echo_run_kind" "$echo_config" "$PARTITION"
 fi
 
 if [[ "${INCLUDE_NEXTLAT:-0}" == "1" ]]; then
   if [[ "$SUBMIT_MODE" == "split-partitions" ]]; then
-    submit_one echo-nextlat echo_configs/qwen3_8b_rl_nextlat_smoke.yaml "$NEXTLAT_PARTITION" "$SUBMITTED_JOB_ID"
+    submit_one "$nextlat_run_kind" "$nextlat_config" "$NEXTLAT_PARTITION" "$SUBMITTED_JOB_ID"
   elif [[ "$SUBMIT_MODE" == "sequential" ]]; then
-    submit_one echo-nextlat echo_configs/qwen3_8b_rl_nextlat_smoke.yaml "$PARTITION" "$dependency"
+    submit_one "$nextlat_run_kind" "$nextlat_config" "$PARTITION" "$dependency"
   else
-    submit_one echo-nextlat echo_configs/qwen3_8b_rl_nextlat_smoke.yaml "$PARTITION"
+    submit_one "$nextlat_run_kind" "$nextlat_config" "$PARTITION"
   fi
 fi
 
