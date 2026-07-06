@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import copy
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -186,51 +187,69 @@ class EchoPPOTrainer(RayPPOTrainer):
         if rewards and not isinstance(rewards[0], list):
             self._apply_world_model_only(generator_output)
             self._apply_world_model_filter(generator_output, uids)
-            generator_output, uids = self._drop_no_signal_samples(generator_output, uids)
+            generator_output = self._replace_no_signal_samples(generator_output)
         return super().postprocess_generator_output(generator_output, uids)
 
-    def _drop_no_signal_samples(
-        self, generator_output: GeneratorOutput, uids: List[str]
-    ) -> Tuple[GeneratorOutput, List[str]]:
+    def _replace_no_signal_samples(self, generator_output: GeneratorOutput) -> GeneratorOutput:
         n = len(generator_output.get("response_ids") or [])
         if n == 0:
-            return generator_output, uids
+            return generator_output
 
         no_signal_indices = [idx for idx in range(n) if self._sample_has_no_training_signal(generator_output, idx)]
         if not no_signal_indices:
             self.all_metrics["generate/no_signal_samples_dropped"] = 0.0
-            return generator_output, uids
+            self.all_metrics["generate/no_signal_samples_replaced"] = 0.0
+            return generator_output
 
         no_signal_set = set(no_signal_indices)
         keep_indices = [idx for idx in range(n) if idx not in no_signal_set]
         if not keep_indices:
             logger.warning(
-                "[policy-train] no_signal_drop_skipped_all_samples "
+                "[policy-train] no_signal_replace_skipped_all_samples "
                 f"batch={n} no_signal_samples={len(no_signal_indices)}"
             )
             self.all_metrics["generate/no_signal_samples_dropped"] = 0.0
-            return generator_output, uids
+            self.all_metrics["generate/no_signal_samples_replaced"] = 0.0
+            return generator_output
 
         trajectories = generator_output.get("trajectory_ids") or []
         metadata = generator_output.get("trajectory_metadata") or []
-        dropped = []
+        replacements = []
         for idx in no_signal_indices:
+            donor_idx = keep_indices[len(replacements) % len(keep_indices)]
             meta = metadata[idx] if idx < len(metadata) and isinstance(metadata[idx], dict) else {}
-            dropped.append(
+            donor_meta = metadata[donor_idx] if donor_idx < len(metadata) and isinstance(metadata[donor_idx], dict) else {}
+            original_trajectory = self._trajectory_id_for_log(trajectories[idx]) if idx < len(trajectories) else None
+            replacements.append(
                 {
                     "idx": idx,
-                    "trajectory": self._trajectory_id_for_log(trajectories[idx]) if idx < len(trajectories) else None,
+                    "trajectory": original_trajectory,
                     "path": meta.get("path"),
                     "stop_reason": meta.get("stop_reason"),
+                    "donor_idx": donor_idx,
+                    "donor_trajectory": self._trajectory_id_for_log(trajectories[donor_idx])
+                    if donor_idx < len(trajectories)
+                    else None,
+                    "donor_path": donor_meta.get("path"),
                 }
             )
+            self._copy_generator_output_row(generator_output, source_idx=donor_idx, target_idx=idx, original_len=n)
+            metadata = generator_output.get("trajectory_metadata") or []
+            if idx < len(metadata) and isinstance(metadata[idx], dict):
+                metadata[idx]["replacement_for_no_signal_sample"] = {
+                    "original_trajectory": original_trajectory,
+                    "original_path": meta.get("path"),
+                    "original_stop_reason": meta.get("stop_reason"),
+                    "donor_idx": donor_idx,
+                }
 
         logger.warning(
-            "[policy-train] dropped_no_signal_samples "
-            f"count={len(no_signal_indices)} kept={len(keep_indices)} dropped={dropped}"
+            "[policy-train] replaced_no_signal_samples "
+            f"count={len(no_signal_indices)} donors={len(keep_indices)} replacements={replacements}"
         )
-        self.all_metrics["generate/no_signal_samples_dropped"] = float(len(no_signal_indices))
-        return self._filter_generator_output_rows(generator_output, keep_indices, n), [uids[i] for i in keep_indices]
+        self.all_metrics["generate/no_signal_samples_dropped"] = 0.0
+        self.all_metrics["generate/no_signal_samples_replaced"] = float(len(no_signal_indices))
+        return generator_output
 
     def _sample_has_no_training_signal(self, generator_output: GeneratorOutput, idx: int) -> bool:
         mask_keys = (
@@ -249,16 +268,12 @@ class EchoPPOTrainer(RayPPOTrainer):
         return True
 
     @staticmethod
-    def _filter_generator_output_rows(
-        generator_output: GeneratorOutput, keep_indices: List[int], original_len: int
-    ) -> GeneratorOutput:
-        filtered: GeneratorOutput = {}
+    def _copy_generator_output_row(
+        generator_output: GeneratorOutput, *, source_idx: int, target_idx: int, original_len: int
+    ) -> None:
         for key, value in generator_output.items():
             if isinstance(value, list) and len(value) == original_len:
-                filtered[key] = [value[i] for i in keep_indices]
-            else:
-                filtered[key] = value
-        return filtered
+                value[target_idx] = copy.deepcopy(value[source_idx])
 
     def _apply_world_model_only(self, generator_output: GeneratorOutput) -> None:
         world_model_only = generator_output.get("world_model_only")
