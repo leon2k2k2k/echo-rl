@@ -4,6 +4,7 @@ import math
 import os
 import time
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import ray
@@ -58,6 +59,41 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             pass
         return int(getattr(self, "_rank", -1))
 
+    def _policy_rank_log_path(self) -> Optional[Path]:
+        log_dir = os.environ.get("ECHO_POLICY_RANK_LOG_DIR")
+        if not log_dir:
+            output_dir = os.environ.get("OUTPUT_DIR")
+            if not output_dir:
+                skyrl_log_file = os.environ.get("SKYRL_LOG_FILE")
+                if skyrl_log_file:
+                    output_dir = str(Path(skyrl_log_file).resolve().parent.parent)
+            if output_dir:
+                log_dir = str(Path(output_dir) / "policy_rank_logs")
+        if not log_dir:
+            return None
+        rank = self._rank_for_log()
+        return Path(log_dir) / f"rank_{rank}_pid_{os.getpid()}.log"
+
+    def _policy_rank_log(self, event: str, **fields: Any) -> None:
+        path = self._policy_rank_log_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            parts = [
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                f"event={event}",
+                f"pid={os.getpid()}",
+                f"rank={self._rank_for_log()}",
+            ]
+            parts.extend(f"{key}={value!r}" for key, value in fields.items())
+            with path.open("a", encoding="utf-8") as f:
+                f.write(" ".join(parts) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            pass
+
     def _batch_summary_for_log(self, data: TrainingInputBatch) -> Dict[str, Any]:
         sequences = data.get("sequences")
         seq_len = int(sequences.shape[1]) if sequences is not None and hasattr(sequences, "shape") else None
@@ -87,6 +123,11 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         started = time.monotonic()
         rank = self._rank_for_log()
         summary = self._batch_summary_for_log(data)
+        self._policy_rank_log(
+            "forward_backward_start",
+            loss_fn=loss_fn or self.cfg.algorithm.policy_loss_type,
+            **summary,
+        )
         logger.info(
             "[policy-train] forward_backward_start "
             f"rank={rank} loss_fn={loss_fn or self.cfg.algorithm.policy_loss_type} "
@@ -98,13 +139,27 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         )
         try:
             status = super().forward_backward(data, loss_fn=loss_fn, loss_fn_config=loss_fn_config)
-        except Exception:
-            logger.exception(f"[policy-train] forward_backward_failed rank={rank} sec={time.monotonic() - started:.2f}")
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            self._policy_rank_log("forward_backward_failed", sec=round(elapsed, 2), error=repr(exc))
+            logger.exception(f"[policy-train] forward_backward_failed rank={rank} sec={elapsed:.2f}")
             raise
 
         elapsed = time.monotonic() - started
         tokens = summary["loss_tokens"] or summary["world_tokens"] or 0.0
         tokens_per_sec = (tokens / elapsed) if elapsed > 0 and tokens else 0.0
+        self._policy_rank_log(
+            "forward_backward_done",
+            sec=round(elapsed, 2),
+            tokens_per_sec=round(tokens_per_sec, 2),
+            final_loss=status.get("final_loss"),
+            policy_loss=status.get("policy_loss"),
+            policy_entropy=status.get("policy_entropy"),
+            world_loss_scaled=status.get("loss_metrics/world_loss_scaled"),
+            world_ce=status.get("loss_metrics/world_ce_selected_per_token"),
+            world_policy_ratio=status.get("loss_metrics/world_policy_loss_ratio"),
+            nextlat_loss_scaled=status.get("loss_metrics/nextlat_loss_scaled"),
+        )
         logger.info(
             "[policy-train] forward_backward_done "
             f"rank={rank} sec={elapsed:.2f} tokens_per_sec={tokens_per_sec:.2f} "
@@ -122,16 +177,21 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
 
         started = time.monotonic()
         rank = self._rank_for_log()
+        self._policy_rank_log("optim_step_start")
         logger.info(f"[policy-train] optim_step_start rank={rank}")
         try:
             grad_norm = super().optim_step()
-        except Exception:
-            logger.exception(f"[policy-train] optim_step_failed rank={rank} sec={time.monotonic() - started:.2f}")
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            self._policy_rank_log("optim_step_failed", sec=round(elapsed, 2), error=repr(exc))
+            logger.exception(f"[policy-train] optim_step_failed rank={rank} sec={elapsed:.2f}")
             raise
 
+        elapsed = time.monotonic() - started
+        self._policy_rank_log("optim_step_done", sec=round(elapsed, 2), grad_norm=grad_norm, lr=self.get_lr())
         logger.info(
             "[policy-train] optim_step_done "
-            f"rank={rank} sec={time.monotonic() - started:.2f} grad_norm={grad_norm} lr={self.get_lr()}"
+            f"rank={rank} sec={elapsed:.2f} grad_norm={grad_norm} lr={self.get_lr()}"
         )
         return grad_norm
 
@@ -205,6 +265,20 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         )
         loss_config = replace(loss_config, world_model_coeff=world_model_coeff)
         context = aux_policy_loss_context or {}
+        self._policy_rank_log(
+            "aux_loss_start",
+            global_step=global_step,
+            total_training_steps=total_training_steps,
+            policy_loss=self._scalar_for_log(policy_loss),
+            world_model_coeff=world_model_coeff,
+            nextlat_coeff=float(getattr(loss_config, "nextlat_coeff", 0.0) or 0.0),
+            microbatch_weight=microbatch_weight,
+            grad_sum_correction_factor=grad_sum_correction_factor,
+            world_mask_tokens=self._tensor_sum_for_log(extras.get("world_loss_mask")),
+            warning_mask_tokens=self._tensor_sum_for_log(extras.get("world_warning_mask")),
+            env_mask_tokens=self._tensor_sum_for_log(extras.get("world_env_mask")),
+            nextlat_mask_tokens=self._tensor_sum_for_log(extras.get("nextlat_loss_mask")),
+        )
         world_loss_scaled, world_metrics = compute_world_model_loss(
             action_log_probs,
             extras.get("world_loss_mask"),
@@ -213,6 +287,13 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             env_mask=extras.get("world_env_mask"),
             full_observation_count=extras.get("world_full_observation_count"),
             token_normalization_denominator=context.get("world_token_normalization_denominator"),
+        )
+        self._policy_rank_log(
+            "world_loss_done",
+            world_loss_scaled=self._scalar_for_log(world_loss_scaled),
+            world_loss_unscaled=self._scalar_for_log(world_metrics.get("world_loss_unscaled")),
+            world_ce=self._scalar_for_log(world_metrics.get("world_ce_selected_per_token")),
+            world_tokens=self._scalar_for_log(world_metrics.get("world_tokens_selected")),
         )
         nextlat_scaled = None
         nextlat_metrics: Dict[str, Any] = {}
@@ -245,9 +326,16 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 nextlat_token_mask=nextlat_token_mask,
                 config=nextlat_cfg,
             )
+            self._policy_rank_log(
+                "nextlat_loss_done",
+                nextlat_loss_scaled=self._scalar_for_log(nextlat_scaled),
+                nextlat_loss_unscaled=self._scalar_for_log(nextlat_metrics.get("nextlat_loss_unscaled")),
+                nextlat_tokens=self._scalar_for_log(nextlat_metrics.get("nextlat_tokens_selected")),
+            )
 
         if world_loss_scaled is None and nextlat_scaled is None:
             coeff_tensor = torch.tensor(float(world_model_coeff), device=action_log_probs.device)
+            self._policy_rank_log("aux_loss_skip", reason="no_aux_terms", world_model_coeff=world_model_coeff)
             return None, {
                 "status/world_model_coeff": coeff_tensor,
                 "status/nextlat_coeff": torch.tensor(float(nextlat_coeff), device=action_log_probs.device),
@@ -313,6 +401,12 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 f"rank={self._rank_for_log()} microbatch_weight={microbatch_weight:.6g} "
                 f"grad_sum_correction={grad_sum_correction_factor:.6g} "
                 + " ".join(f"{key}={value}" for key, value in log_values.items())
+            )
+            self._policy_rank_log(
+                "aux_loss_done",
+                microbatch_weight=microbatch_weight,
+                grad_sum_correction_factor=grad_sum_correction_factor,
+                **log_values,
             )
         return aux_loss, world_metrics
 

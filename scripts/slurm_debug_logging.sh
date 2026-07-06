@@ -119,3 +119,41 @@ collect_slurm_debug_artifacts() {
   echo "Debug artifacts:"
   find "$output_dir/debug" -maxdepth 1 -type f -printf '  %s %p\n' 2>/dev/null | sort -n || true
 }
+
+maybe_hold_slurm_failure() {
+  local output_dir="$1"
+  local exit_code="$2"
+  if [[ "$exit_code" -eq 0 || "${ECHO_HOLD_ON_FAILURE:-0}" != "1" ]]; then
+    return 0
+  fi
+
+  local hold_seconds="${ECHO_HOLD_ON_FAILURE_SECONDS:-3600}"
+  log_section "holding failed allocation for inspection"
+  echo "exit_code=$exit_code"
+  echo "hold_seconds=$hold_seconds"
+  echo "node=$(hostname 2>/dev/null || true)"
+  echo "output_dir=$output_dir"
+  echo "heartbeat_log=$output_dir/debug/heartbeat.log"
+  echo "final_snapshot_log=$output_dir/debug/final_snapshot.log"
+  echo "Ray session: $(readlink -f /tmp/ray/session_latest 2>/dev/null || readlink -f /ram/tmp/ray/session_latest 2>/dev/null || true)"
+  echo
+  echo "Suggested inspection commands from another shell:"
+  echo "  ssh $(hostname 2>/dev/null || echo NODE)"
+  echo "  ps -u \"\${USER:-alex}\" -o pid,ppid,stat,etime,pcpu,pmem,args | grep -E 'echo_rl|skyrl|raylet|VLLM|RayWorker|EchoFSDP' | grep -v grep"
+  echo "  nvidia-smi"
+  echo "  tail -f \"$output_dir/debug/heartbeat.log\""
+  echo
+  echo "Sleeping to keep the Slurm allocation alive..."
+  sleep "$hold_seconds" || true
+}
+
+slurm_debug_exit_trap() {
+  local output_dir="$1"
+  local exit_code="$2"
+  if [[ "$exit_code" -ne 0 && "${ECHO_HOLD_ON_FAILURE:-0}" == "1" ]]; then
+    collect_slurm_debug_artifacts "$output_dir" "$exit_code"
+    maybe_hold_slurm_failure "$output_dir" "$exit_code"
+  fi
+  stop_slurm_heartbeat
+  collect_slurm_debug_artifacts "$output_dir" "$exit_code"
+}

@@ -21,11 +21,12 @@ run_kind="${RUN_KIND:-echo-micro}"
 run_id="${RUN_ID:-${run_kind}-smoke-${SLURM_JOB_ID:-local}}"
 export OUTPUT_DIR="${OUTPUT_DIR:-$ECHO_RUNTIME_ROOT/outputs/$run_id}"
 export CONFIG_PATH="${CONFIG_PATH:-echo_configs/qwen3_8b_rl_echo_micro_smoke.yaml}"
+export ECHO_POLICY_RANK_LOG_DIR="${ECHO_POLICY_RANK_LOG_DIR:-$OUTPUT_DIR/policy_rank_logs}"
 mkdir -p "$OUTPUT_DIR" "$OUTPUT_DIR/debug"
 
 # shellcheck source=/dev/null
 source scripts/slurm_debug_logging.sh
-trap 'rc=$?; stop_slurm_heartbeat; collect_slurm_debug_artifacts "$OUTPUT_DIR" "$rc"; exit "$rc"' EXIT
+trap 'rc=$?; slurm_debug_exit_trap "$OUTPUT_DIR" "$rc"; exit "$rc"' EXIT
 
 print_slurm_preamble
 start_slurm_heartbeat "$OUTPUT_DIR"

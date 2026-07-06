@@ -220,6 +220,20 @@ def maybe_print_gzip_tail(path: Path, title: str, tail: int) -> None:
         print(path.read_text(encoding="utf-8", errors="replace")[-4000:])
 
 
+def print_policy_rank_logs(output_dir: Path, tail: int) -> None:
+    rank_dir = output_dir / "policy_rank_logs"
+    if not rank_dir.exists():
+        print("No persisted policy rank logs found.")
+        return
+    paths = sorted(rank_dir.glob("*.log"))
+    if not paths:
+        print("No persisted policy rank logs found.")
+        return
+    for path in paths:
+        print_section(f"policy rank log {path.name}")
+        print(tail_lines(path.read_text(encoding="utf-8", errors="replace"), tail))
+
+
 def infer_job_id(output_dir: Path, explicit: str | None) -> str | None:
     if explicit:
         return explicit
@@ -291,6 +305,9 @@ def main() -> int:
 
     print_section("ray policy-train search")
     print_policy_train_search(ray_tar, args.tail)
+
+    print_section("persisted policy rank logs")
+    print_policy_rank_logs(output_dir, args.tail)
 
     final_snapshot = debug_dir / "final_snapshot.log"
     if final_snapshot.exists():

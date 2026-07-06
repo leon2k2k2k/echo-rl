@@ -108,6 +108,7 @@ EOF
 fi
 
 echo "Submitting ECHO ablation smokes with RUN_SCALE=$RUN_SCALE SUBMIT_MODE=$SUBMIT_MODE"
+echo "Failure hold: ECHO_HOLD_ON_FAILURE=${ECHO_HOLD_ON_FAILURE:-0} seconds=${ECHO_HOLD_ON_FAILURE_SECONDS:-3600}"
 echo "Format: RUN_KIND JOB_ID PARTITION DEPENDENCY CONFIG_PATH"
 
 dependency=""
@@ -144,6 +145,9 @@ Monitor:
 Metric grep:
   cd $ECHO_REPO
   bash scripts/grep_smoke_metrics.sh
+
+If ECHO_HOLD_ON_FAILURE=1 and a job fails, the allocation stays alive for
+ECHO_HOLD_ON_FAILURE_SECONDS while debug/heartbeat.log keeps updating.
 
 Failure diagnosis after a job exits:
   cd $ECHO_REPO
