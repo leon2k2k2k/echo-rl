@@ -65,10 +65,7 @@ echo "Ensuring flashinfer-python is present without dependency resolution..."
   "flashinfer-python==0.6.6"
 
 echo "Installing lightweight vLLM runtime deps exposed by the import preflight..."
-"$PY" -m pip install \
-  --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-  "setproctitle" \
-  "msgspec"
+"$REPO_ROOT/scripts/install_echo_vllm_python_deps.sh"
 
 echo "Runtime wheel install finished. Run:"
 echo "  $PY $REPO_ROOT/scripts/check_echo_runtime_imports.py"
