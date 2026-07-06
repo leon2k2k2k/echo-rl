@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import importlib.metadata
 import sys
@@ -62,7 +63,7 @@ REQUIRED_DISTS = [
     "torchvision",
 ]
 
-REQUIRED_IMPORTS = [
+FAST_IMPORTS = [
     # ECHO direct/runtime deps.
     ("datasets", "datasets"),
     ("harbor", "harbor"),
@@ -100,6 +101,11 @@ REQUIRED_IMPORTS = [
     # SkyRL local package and gym extra.
     ("skyrl", "skyrl"),
     ("skyrl_gym", "skyrl_gym"),
+    ("echo_rl.terminal_agent.entrypoint", "echo-rl"),
+    ("echo_rl.world_modeling.fsdp_worker", "echo-rl"),
+]
+
+DEEP_IMPORTS = [
     # FSDP + vLLM inference path.
     ("vllm", "vllm"),
     ("vllm_router", "vllm-router"),
@@ -119,12 +125,20 @@ REQUIRED_IMPORTS = [
     ("skyrl.backends.skyrl_train.inference_servers.setup", "skyrl"),
     ("skyrl.backends.skyrl_train.inference_engines.vllm.vllm_engine", "skyrl"),
     ("skyrl.backends.skyrl_train.workers.fsdp.fsdp_worker", "skyrl"),
-    ("echo_rl.terminal_agent.entrypoint", "echo-rl"),
-    ("echo_rl.world_modeling.fsdp_worker", "echo-rl"),
 ]
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Check the ECHO/SkyRL runtime environment."
+    )
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="also import slow CUDA/vLLM/SkyRL launch-path modules",
+    )
+    args = parser.parse_args()
+
     failed = []
     print("Checking installed distributions:")
     for dist in REQUIRED_DISTS:
@@ -135,8 +149,10 @@ def main() -> int:
             print(f"FAIL dist {dist}: not installed")
             failed.append((f"dist:{dist}", dist))
 
-    print("\nChecking imports:")
-    for module, package in REQUIRED_IMPORTS:
+    imports = FAST_IMPORTS + (DEEP_IMPORTS if args.deep else [])
+    mode = "deep" if args.deep else "fast"
+    print(f"\nChecking {mode} imports:")
+    for module, package in imports:
         try:
             imported = importlib.import_module(module)
             version = getattr(imported, "__version__", "")
@@ -150,6 +166,8 @@ def main() -> int:
         for module, package in failed:
             print(f"  module={module} package={package}")
         return 1
+    if not args.deep:
+        print("\nFast check passed. Run with --deep only after env changes or import failures.")
     return 0
 
 
