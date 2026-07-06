@@ -14,8 +14,10 @@ cd "$REPO_ROOT"
 # shellcheck source=/dev/null
 source scripts/cluster_env.sh
 
-export TERMINAL_AGENT_TRAIN_PARQUET="${TERMINAL_AGENT_TRAIN_PARQUET:-$ECHO_RUNTIME_ROOT/data/tmax_echo/train.parquet}"
-export TERMINAL_AGENT_VAL_PARQUET="${TERMINAL_AGENT_VAL_PARQUET:-$ECHO_RUNTIME_ROOT/data/tmax_echo/val.parquet}"
+# Force the real TMax smoke data for this probe. Do not inherit synthetic
+# smoke-data paths from the user's shell, because that changes the repro.
+export TERMINAL_AGENT_TRAIN_PARQUET="$ECHO_RUNTIME_ROOT/data/tmax_echo/train.parquet"
+export TERMINAL_AGENT_VAL_PARQUET="$ECHO_RUNTIME_ROOT/data/tmax_echo/val.parquet"
 check_terminal_agent_data_files
 
 export RUN_KIND="${RUN_KIND:-echo-tmax-timeout-probe}"
