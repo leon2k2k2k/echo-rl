@@ -81,7 +81,7 @@ timeout_sec = 30.0
         _add_text(
             tf,
             "environment/Dockerfile",
-            "FROM ubuntu:24.04\nWORKDIR /app\n",
+            "FROM ubuntu:22.04\nWORKDIR /app\n",
         )
         _add_text(
             tf,
