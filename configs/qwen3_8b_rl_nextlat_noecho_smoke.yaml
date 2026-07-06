@@ -1,6 +1,6 @@
 # Tiny fast-timeout NextLat-only smoke config for the terminal-agent task.
 # This disables the ECHO world-token CE loss and keeps only the NextLat
-# auxiliary loss on environment observation tokens.
+# auxiliary loss on all generated completion tokens.
 
 data:
   train_data:
@@ -80,7 +80,7 @@ generator:
   terminal_output_truncation: start_end
   add_format_warn: true
   world_loss_target: env_only
-  nextlat_loss_target: env_only
+  nextlat_loss_target: all_completion
   thinking_handling: keep_all
   verifier_timeout: 60.0
   length_penalty_coef: 0.0
