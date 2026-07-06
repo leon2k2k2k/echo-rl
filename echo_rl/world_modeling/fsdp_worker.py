@@ -196,6 +196,10 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         return grad_norm
 
     def _nextlat_dynamics(self):
+        owner = self._nextlat_dynamics_owner()
+        return getattr(owner, "nextlat_dynamics", None) if owner is not None else None
+
+    def _nextlat_dynamics_owner(self):
         for module in (
             self.model,
             getattr(self.model, "model", None),
@@ -205,8 +209,25 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             getattr(getattr(self.model, "model", None), "_fsdp_wrapped_module", None),
         ):
             if module is not None and hasattr(module, "nextlat_dynamics"):
-                return module.nextlat_dynamics
+                return module
         return None
+
+    async def broadcast_to_inference_engines(self, *args, **kwargs):
+        owner = self._nextlat_dynamics_owner()
+        dynamics_model = getattr(owner, "nextlat_dynamics", None) if owner is not None else None
+        if dynamics_model is None:
+            return await super().broadcast_to_inference_engines(*args, **kwargs)
+
+        # vLLM serves the base Qwen model and does not have ECHO's auxiliary
+        # NextLat head. Keep the head trainable/checkpointable on the policy
+        # worker, but exclude it from sampler weight sync.
+        delattr(owner, "nextlat_dynamics")
+        self._policy_rank_log("nextlat_sync_exclude_start")
+        try:
+            return await super().broadcast_to_inference_engines(*args, **kwargs)
+        finally:
+            owner.nextlat_dynamics = dynamics_model
+            self._policy_rank_log("nextlat_sync_exclude_done")
 
     def initialize_aux_policy_modules(self, wrapped_model, model_config) -> None:
         nextlat_coeff = float(getattr(self.cfg.algorithm, "nextlat_coeff", 0.0) or 0.0)
