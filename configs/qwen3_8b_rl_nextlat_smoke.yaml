@@ -89,7 +89,7 @@ generator:
   base_temp_dir: ${oc.env:ECHO_RUNTIME_ROOT}/tmp/tbench
   agent_max_concurrency: 32
   agent_timeout: 300.0
-  max_concurrent_builds: 8
+  max_concurrent_builds: 1
   max_build_retries: 3
   dataset_num_workers: 4
   dataset_max_rows: 4

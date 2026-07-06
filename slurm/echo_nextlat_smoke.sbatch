@@ -19,7 +19,17 @@ source scripts/cluster_env.sh
 
 ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
-"$PYTHON" scripts/check_echo_runtime_imports.py
+if [[ "${SKIP_ECHO_RUNTIME_IMPORT_CHECK:-0}" != "1" ]]; then
+  "$PYTHON" scripts/check_echo_runtime_imports.py
+else
+  echo "Skipping ECHO runtime import check because SKIP_ECHO_RUNTIME_IMPORT_CHECK=1"
+fi
+
+# Harbor task Dockerfiles rely on locally cached base images on some Alex nodes.
+# BuildKit may still perform remote metadata lookups even when the image tag
+# exists locally, so use the classic builder for smoke task environments.
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
+export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
 bash scripts/sync_echo_to_skyrl.sh
 
@@ -39,5 +49,7 @@ echo "CONFIG_PATH=$CONFIG_PATH"
 echo "PYTHON=$PYTHON"
 echo "SKYRL_DIR=$SKYRL_DIR"
 echo "ECHO_REPO=$ECHO_REPO"
+echo "DOCKER_BUILDKIT=$DOCKER_BUILDKIT"
+echo "COMPOSE_DOCKER_CLI_BUILD=$COMPOSE_DOCKER_CLI_BUILD"
 
 "$PYTHON" -m echo_rl.terminal_agent.entrypoint --config "$CONFIG_PATH"
