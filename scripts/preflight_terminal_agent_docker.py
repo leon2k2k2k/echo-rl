@@ -44,6 +44,7 @@ async def _run(args: argparse.Namespace) -> int:
         runtime_root = os.environ.get("ECHO_RUNTIME_ROOT")
         if runtime_root:
             os.environ["ECHO_DOCKER_WHEELHOUSE"] = str(Path(runtime_root) / "docker_wheelhouse")
+    os.environ.setdefault("ECHO_DOCKER_PIP_INDEX_URL", "https://pypi.tuna.tsinghua.edu.cn/simple")
 
     rows = _load_environment_rows(args.parquet, args.rows)
     provider = HarborEnvironmentProvider(
@@ -60,6 +61,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"COMPOSE_DOCKER_CLI_BUILD={os.environ.get('COMPOSE_DOCKER_CLI_BUILD')}")
     print(f"ECHO_CACHE_TASK_IMAGES={os.environ.get('ECHO_CACHE_TASK_IMAGES')}")
     print(f"ECHO_DOCKER_WHEELHOUSE={os.environ.get('ECHO_DOCKER_WHEELHOUSE')}")
+    print(f"ECHO_DOCKER_PIP_INDEX_URL={os.environ.get('ECHO_DOCKER_PIP_INDEX_URL')}")
     print(f"max_concurrent_builds={args.max_concurrent_builds}")
 
     t0 = time.monotonic()
