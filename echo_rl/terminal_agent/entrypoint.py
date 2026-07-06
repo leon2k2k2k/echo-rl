@@ -94,6 +94,9 @@ class TerminalAgentGeneratorConfig(GeneratorConfig):
     dataset_num_workers: int = 8
     dataset_max_rows: Optional[int] = None
     eval_dataset_max_rows_per_source: Optional[int] = None
+    transcript_log_path: Optional[str] = None
+    log_transcripts_to_console: bool = False
+    transcript_log_max_chars: int = 20000
 
 
 @dataclass

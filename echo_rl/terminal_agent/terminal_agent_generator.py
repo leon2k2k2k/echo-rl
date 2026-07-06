@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,6 +110,12 @@ class TerminalAgentGenerator(GeneratorInterface):
         self._think_end_id: int | None = None
         if generator_cfg.thinking_handling != "keep_all":
             self._init_thinking_token_ids()
+        self._transcript_log_path = (
+            Path(generator_cfg.transcript_log_path).expanduser()
+            if getattr(generator_cfg, "transcript_log_path", None)
+            else None
+        )
+        self._transcript_log_lock = threading.Lock()
 
     async def generate(self, input_batch: GeneratorInput, disable_tqdm: bool = False) -> GeneratorOutput:
         prompts = input_batch["prompts"]
@@ -220,13 +228,14 @@ class TerminalAgentGenerator(GeneratorInterface):
                 "data_source": env_extra.get("data_source"),
             },
         )
+        self._log_transcript_event(interaction, trajectory_id, "prompt", messages=interaction.prompt_messages)
         environment = None
         setup_complete = False
         try:
             environment = await provider.create(env_extra)
             await environment.setup()
             setup_complete = True
-            await self._agent_loop(interaction, trajectory_id.to_string(), environment, sampling_params)
+            await self._agent_loop(interaction, trajectory_id, environment, sampling_params)
         except Exception as exc:
             stop_reason = "env_setup_error" if not setup_complete else "error"
             logger.warning("Environment or agent failed for %s: %s", trajectory_id, exc, exc_info=True)
@@ -236,6 +245,16 @@ class TerminalAgentGenerator(GeneratorInterface):
                 await environment.cleanup()
 
         self._ensure_non_empty_completion(interaction)
+        self._log_transcript_event(
+            interaction,
+            trajectory_id,
+            "final",
+            messages=interaction.messages,
+            reward=interaction.reward,
+            correct=interaction.correct,
+            stop_reason=str(interaction.metadata.get("stop_reason", "error")),
+            trace=interaction.metadata.get("trace"),
+        )
         return TerminalTrajectoryOutput(
             trajectory_id=trajectory_id,
             prompt_token_ids=interaction.prompt_token_ids,
@@ -258,10 +277,11 @@ class TerminalAgentGenerator(GeneratorInterface):
     async def _agent_loop(
         self,
         interaction: TerminalInteraction,
-        session_id: str,
+        trajectory_id: TrajectoryID,
         environment: HarborEnvironment,
         sampling_params: dict[str, Any],
     ) -> None:
+        session_id = trajectory_id.to_string()
         sampling_params = dict(sampling_params)
         sampling_params.setdefault("logprobs", 1)
         stop_reason = "error"
@@ -312,6 +332,16 @@ class TerminalAgentGenerator(GeneratorInterface):
 
             assistant_start = len(interaction.completion_token_ids)
             interaction.append_assistant(add_ids, add_logprobs or [0.0] * len(add_ids), self.tokenizer)
+            response_text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
+            self._log_transcript_event(
+                interaction,
+                trajectory_id,
+                "assistant",
+                turn=turn,
+                content=response_text,
+                generate_sec=generate_sec,
+                generate_tokens=len(token_ids),
+            )
             if self.nextlat_loss_target in {"assistant_only", "assistant_plus_env", "all_completion"}:
                 self._apply_mask_indices(
                     interaction.completion_nextlat_masks,
@@ -322,7 +352,6 @@ class TerminalAgentGenerator(GeneratorInterface):
                 clean_ids, _ = self._strip_thinking_from_tokens(token_ids)
                 rollout_context_ids.extend(clean_ids)
 
-            response_text = self.tokenizer.decode(token_ids, skip_special_tokens=True)
             format_warnings, format_violations = check_format_warnings(
                 response_text,
                 tags=self._parser.format_tags,
@@ -335,9 +364,27 @@ class TerminalAgentGenerator(GeneratorInterface):
 
             if parse_result.error:
                 turn_traces.append(
-                    self._turn_trace(turn, generate_sec, len(token_ids), 0.0, True, False, current_len, format_violations)
+                    self._turn_trace(
+                        turn,
+                        generate_sec,
+                        len(token_ids),
+                        0.0,
+                        True,
+                        False,
+                        current_len,
+                        format_violations,
+                    )
                 )
                 await self._add_observation(interaction, "", parse_result.error, rollout_context_ids)
+                self._log_transcript_event(
+                    interaction,
+                    trajectory_id,
+                    "feedback",
+                    turn=turn,
+                    content=parse_result.error,
+                    parse_error=True,
+                    format_violations=format_violations,
+                )
                 continue
 
             commands = self._select_commands(parse_result.commands)
@@ -367,14 +414,35 @@ class TerminalAgentGenerator(GeneratorInterface):
             if self.generator_cfg.add_format_warn and format_warnings:
                 warnings_prefix = "WARNINGS:\n" + "\n".join(f"- {w}" for w in format_warnings) + "\n\n"
             if not commands:
+                feedback = "No commands provided. Please provide commands to execute or set done."
                 await self._add_observation(
                     interaction,
                     warnings_prefix,
-                    "No commands provided. Please provide commands to execute or set done.",
+                    feedback,
                     rollout_context_ids,
+                )
+                self._log_transcript_event(
+                    interaction,
+                    trajectory_id,
+                    "feedback",
+                    turn=turn,
+                    content=warnings_prefix + feedback,
+                    exec_sec=exec_sec,
+                    commands=[],
+                    format_violations=format_violations,
                 )
                 continue
             await self._add_observation(interaction, warnings_prefix, terminal_output, rollout_context_ids)
+            self._log_transcript_event(
+                interaction,
+                trajectory_id,
+                "feedback",
+                turn=turn,
+                content=warnings_prefix + terminal_output,
+                exec_sec=exec_sec,
+                commands=[getattr(command, "raw", str(command)) for command in commands],
+                format_violations=format_violations,
+            )
         else:
             stop_reason = "max_turns"
 
@@ -392,7 +460,9 @@ class TerminalAgentGenerator(GeneratorInterface):
             verifier_error = None
         else:
             t_verify = time.monotonic()
-            verifier_reward, verifier_error = await environment.run_verifier(timeout=self.generator_cfg.verifier_timeout)
+            verifier_reward, verifier_error = await environment.run_verifier(
+                timeout=self.generator_cfg.verifier_timeout
+            )
             verifier_sec = time.monotonic() - t_verify
             interaction.reward = self._compute_reward(verifier_reward, interaction)
             interaction.correct = verifier_reward >= self.generator_cfg.correct_threshold
@@ -419,6 +489,67 @@ class TerminalAgentGenerator(GeneratorInterface):
             value for key, value in metrics.items() if key.startswith("format/") and isinstance(value, int)
         )
         interaction.metrics = metrics
+
+    def _truncate_transcript_text(self, text: str) -> str:
+        max_chars = int(getattr(self.generator_cfg, "transcript_log_max_chars", 20000) or 0)
+        if max_chars <= 0 or len(text) <= max_chars:
+            return text
+        return truncate_output(text, max_chars=max_chars, strategy="start_end")
+
+    def _log_transcript_event(
+        self,
+        interaction: TerminalInteraction,
+        trajectory_id: TrajectoryID,
+        event: str,
+        **fields: Any,
+    ) -> None:
+        if self._transcript_log_path is None and not getattr(self.generator_cfg, "log_transcripts_to_console", False):
+            return
+
+        payload = {
+            "event": event,
+            "trajectory_id": trajectory_id.to_string(),
+            "path": interaction.metadata.get("path"),
+            "data_source": interaction.metadata.get("data_source"),
+            "prompt_id": interaction.prompt_id,
+            "completion_id": interaction.completion_id,
+            **fields,
+        }
+        if "content" in payload and isinstance(payload["content"], str):
+            payload["content"] = self._truncate_transcript_text(payload["content"])
+
+        if self._transcript_log_path is not None:
+            self._transcript_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._transcript_log_lock:
+                with self._transcript_log_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+        if getattr(self.generator_cfg, "log_transcripts_to_console", False):
+            logger.info(
+                "Terminal transcript event=%s trajectory=%s path=%s%s",
+                event,
+                trajectory_id.to_string(),
+                interaction.metadata.get("path"),
+                self._format_transcript_console(payload),
+            )
+
+    def _format_transcript_console(self, payload: dict[str, Any]) -> str:
+        if payload["event"] == "prompt":
+            messages = payload.get("messages") or []
+            rendered = "\n".join(
+                f"[{message.get('role', '?')}]\n{self._truncate_transcript_text(str(message.get('content', '')))}"
+                for message in messages
+            )
+            return f"\n{rendered}" if rendered else ""
+        if payload["event"] == "final":
+            return (
+                f" reward={payload.get('reward')} correct={payload.get('correct')} "
+                f"stop_reason={payload.get('stop_reason')}"
+            )
+        content = payload.get("content")
+        if content is None:
+            return ""
+        return f"\n{content}"
 
     async def _generate_tokens(
         self,
