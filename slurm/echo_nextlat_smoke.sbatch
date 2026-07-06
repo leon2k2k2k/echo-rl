@@ -30,6 +30,7 @@ fi
 # exists locally, so use the classic builder for smoke task environments.
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
+export ECHO_CACHE_TASK_IMAGES="${ECHO_CACHE_TASK_IMAGES:-1}"
 
 bash scripts/sync_echo_to_skyrl.sh
 
@@ -51,5 +52,6 @@ echo "SKYRL_DIR=$SKYRL_DIR"
 echo "ECHO_REPO=$ECHO_REPO"
 echo "DOCKER_BUILDKIT=$DOCKER_BUILDKIT"
 echo "COMPOSE_DOCKER_CLI_BUILD=$COMPOSE_DOCKER_CLI_BUILD"
+echo "ECHO_CACHE_TASK_IMAGES=$ECHO_CACHE_TASK_IMAGES"
 
 "$PYTHON" -m echo_rl.terminal_agent.entrypoint --config "$CONFIG_PATH"

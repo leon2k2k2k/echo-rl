@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -127,10 +128,15 @@ class HarborEnvironment:
         target_image = f"hb__{self._shared_env_name}"
         try:
             result = await self._environment._run_docker_compose_command(["images", "--format", "json"], check=False)
-            images = json.loads(result.stdout or "[]")
+            images = _parse_compose_images_json(result.stdout or "")
             if not images:
                 return
-            source_image = f"{images[0]['Repository']}:{images[0]['Tag']}"
+            image = images[0]
+            repository = image.get("Repository") or image.get("Name")
+            tag = image.get("Tag") or "latest"
+            if not repository:
+                return
+            source_image = f"{repository}:{tag}"
             proc = await asyncio.subprocess.create_subprocess_exec(
                 "docker",
                 "tag",
@@ -207,11 +213,20 @@ class _SharedTaskImage:
         self._task: Task | None = None
         self._env_name: str | None = None
         self._task_env_config: EnvironmentConfig | None = None
+        self._has_local_cached_image = False
         self._is_setup = False
 
     @property
     def env_name(self) -> str | None:
         return self._env_name
+
+    @property
+    def stable_image(self) -> str | None:
+        return f"hb__{self._env_name}" if self._env_name else None
+
+    @property
+    def has_local_cached_image(self) -> bool:
+        return self._has_local_cached_image
 
     @property
     def has_prebuilt_image(self) -> bool:
@@ -238,6 +253,12 @@ class _SharedTaskImage:
         if self._cpus is not None:
             self._task_env_config.cpus = self._cpus
         self._env_name = self._task.name
+        if _cache_task_images_enabled():
+            stable_image = self.stable_image
+            if stable_image and _docker_image_exists(stable_image):
+                logger.info("Reusing cached task image %s for %s", stable_image, self._task_name)
+                self._task_env_config.docker_image = stable_image
+                self._has_local_cached_image = True
         self._is_setup = True
 
     def create_environment(self, rollout_id: str, force_build: bool = False) -> HarborEnvironment:
@@ -260,8 +281,17 @@ class _SharedTaskImage:
         build_env = self.create_environment(rollout_id="build", force_build=True)
         try:
             await build_env.setup()
+            stable_image = self.stable_image
+            if _cache_task_images_enabled() and stable_image and await _docker_image_exists_async(stable_image):
+                logger.info("Cached task image %s for %s", stable_image, self._task_name)
+                self._task_env_config.docker_image = stable_image
+                self._has_local_cached_image = True
         finally:
             await build_env.cleanup()
+
+    async def ensure_cached_image(self) -> None:
+        if not self.has_local_cached_image:
+            raise RuntimeError(f"cached image missing for {self.stable_image!r}")
 
     async def pull_image(self) -> None:
         if not self._is_setup:
@@ -362,7 +392,12 @@ class HarborEnvironmentProvider:
 
         work = []
         for idx, img in enumerate(self._shared_images):
-            action = img.pull_image if img.has_prebuilt_image else img.build_image
+            if img.has_local_cached_image:
+                action = img.ensure_cached_image
+            elif img.has_prebuilt_image:
+                action = img.pull_image
+            else:
+                action = img.build_image
             work.append((idx, _with_retries(action, img)))
         results = await asyncio.gather(*[task for _, task in work], return_exceptions=True)
         for (prompt_idx, _), result in zip(work, results):
@@ -433,3 +468,56 @@ def _safe_extract_tar(archive_bytes: bytes, dest_dir: Path) -> None:
                     target.chmod(target.stat().st_mode | 0o111)
             elif member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
+
+
+def _cache_task_images_enabled() -> bool:
+    return os.environ.get("ECHO_CACHE_TASK_IMAGES", "0") == "1"
+
+
+def _docker_image_exists(image: str) -> bool:
+    proc = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+async def _docker_image_exists_async(image: str) -> bool:
+    proc = await asyncio.subprocess.create_subprocess_exec(
+        "docker",
+        "image",
+        "inspect",
+        image,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    return await proc.wait() == 0
+
+
+def _parse_compose_images_json(stdout: str) -> list[dict[str, Any]]:
+    stdout = stdout.strip()
+    if not stdout:
+        return []
+    try:
+        parsed = json.loads(stdout)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            return [parsed]
+    except json.JSONDecodeError:
+        pass
+
+    images = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            images.append(parsed)
+    return images
