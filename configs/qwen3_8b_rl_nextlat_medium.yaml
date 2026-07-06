@@ -1,5 +1,6 @@
 # Medium ECHO + NextLat config for terminal-agent ablation.
-# Scale: 8 prompts/batch * 4 samples/prompt * 8 batches = 256 train rollouts.
+# Scale: 12 prompts * 4 samples/prompt = 48 train rollouts,
+# with benchmark-like turn depth for terminal-agent tasks to reach nonzero rewards.
 
 data:
   train_data:
@@ -31,7 +32,7 @@ trainer:
       scheduler: constant_with_warmup
       num_warmup_steps: 0
   algorithm:
-    max_seq_len: 12288
+    max_seq_len: 34096
     use_kl_loss: false
     use_kl_in_reward: false
     kl_loss_coef: 0.0
@@ -46,11 +47,11 @@ trainer:
   epochs: 1
   update_epochs_per_batch: 1
   max_prompt_length: 1536
-  train_batch_size: 8
-  policy_mini_batch_size: 8
+  train_batch_size: 4
+  policy_mini_batch_size: 4
   micro_train_batch_size_per_gpu: 1
   micro_forward_batch_size_per_gpu: 1
-  eval_batch_size: 8
+  eval_batch_size: 4
   eval_before_train: false
   eval_interval: -1
   ckpt_interval: 2
@@ -72,36 +73,36 @@ generator:
   step_wise_trajectories: false
   parser_name: qwen35
   command_selection: first
-  max_turns: 4
-  max_context_tokens: 8192
-  max_tokens_per_generation: 512
+  max_turns: 20
+  max_context_tokens: 16384
+  max_tokens_per_generation: 1024
   max_terminal_output_chars: 0
   terminal_output_truncation: start_end
   add_format_warn: true
   world_loss_target: env_only
   nextlat_loss_target: env_only
   thinking_handling: keep_all
-  verifier_timeout: 60.0
+  verifier_timeout: 120.0
   length_penalty_coef: 0.0
   length_penalty_threshold: 20000
   correct_threshold: 0.5
-  max_total_tokens: 12288
+  max_total_tokens: 34096
   docker_memory_mb: 1024
   docker_cpus: 1
   base_temp_dir: ${oc.env:ECHO_RUNTIME_ROOT}/tmp/tbench
   agent_max_concurrency: 32
-  agent_timeout: 420.0
+  agent_timeout: 1800.0
   max_concurrent_builds: 1
   max_build_retries: 3
   dataset_num_workers: 4
-  dataset_max_rows: 64
+  dataset_max_rows: 12
   eval_dataset_max_rows_per_source: 16
   sampling_params:
-    max_generate_length: 512
+    max_generate_length: 1024
     temperature: 0.8
     logprobs: 0
   eval_sampling_params:
-    max_generate_length: 512
+    max_generate_length: 1024
     temperature: 0.6
     logprobs: 0
   inference_engine:

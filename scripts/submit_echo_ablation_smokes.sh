@@ -23,6 +23,7 @@ export ECHO_PARTITION="${ECHO_PARTITION:-a01}"
 export NEXTLAT_PARTITION="${NEXTLAT_PARTITION:-$ECHO_PARTITION}"
 export SUBMIT_MODE="${SUBMIT_MODE:-split-partitions}"
 export RUN_SCALE="${RUN_SCALE:-smoke}"
+export SBATCH_TIME="${SBATCH_TIME:-}"
 export ECHO_LOG_DIR="${ECHO_LOG_DIR:-$ECHO_RUNTIME_ROOT/logs}"
 export ECHO_LOG_POLICY_TRAIN_METRICS="${ECHO_LOG_POLICY_TRAIN_METRICS:-1}"
 mkdir -p "$ECHO_LOG_DIR"
@@ -53,6 +54,9 @@ submit_one() {
   fi
   if [[ "${SBATCH_EXCLUSIVE:-0}" == "1" ]]; then
     sbatch_args+=(--exclusive)
+  fi
+  if [[ -n "$SBATCH_TIME" ]]; then
+    sbatch_args+=(--time="$SBATCH_TIME")
   fi
   local job_id
   job_id="$(
@@ -86,6 +90,9 @@ case "$RUN_SCALE" in
     plain_config="echo_configs/qwen3_8b_rl_plain_medium.yaml"
     echo_config="echo_configs/qwen3_8b_rl_echo_medium.yaml"
     nextlat_config="echo_configs/qwen3_8b_rl_nextlat_medium.yaml"
+    if [[ -z "$SBATCH_TIME" ]]; then
+      SBATCH_TIME="03:00:00"
+    fi
     ;;
   *)
     echo "error: RUN_SCALE must be smoke or medium; got $RUN_SCALE" >&2
