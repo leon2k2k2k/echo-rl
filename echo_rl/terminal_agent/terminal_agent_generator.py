@@ -139,6 +139,13 @@ class TerminalAgentGenerator(GeneratorInterface):
         unique_envs, prompt_idx_by_instance = self._prepare_unique_envs(env_extras, trajectory_ids)
         for extra, trajectory_id in zip(env_extras, trajectory_ids):
             extra["_prompt_idx"] = prompt_idx_by_instance[trajectory_id.instance_id]
+        logger.info(
+            "[terminal-agent] generate_start prompts=%s unique_envs=%s n_samples_per_prompt=%s concurrency=%s",
+            len(prompts),
+            len(unique_envs),
+            self.generator_cfg.n_samples_per_prompt,
+            self.generator_cfg.agent_max_concurrency,
+        )
 
         outputs: list[TerminalTrajectoryOutput | None] = [None] * len(prompts)
         progress = tqdm(
@@ -150,11 +157,25 @@ class TerminalAgentGenerator(GeneratorInterface):
         )
 
         try:
+            t_prepare = time.monotonic()
+            logger.info("[terminal-agent] prepare_batch_start unique_envs=%s", len(unique_envs))
             await provider.prepare_batch(unique_envs, num_generations=self.generator_cfg.n_samples_per_prompt)
+            logger.info(
+                "[terminal-agent] prepare_batch_done unique_envs=%s sec=%.2f",
+                len(unique_envs),
+                time.monotonic() - t_prepare,
+            )
             semaphore = asyncio.Semaphore(self.generator_cfg.agent_max_concurrency)
 
             async def _worker(idx: int) -> None:
                 async with semaphore:
+                    t_worker = time.monotonic()
+                    logger.info(
+                        "[terminal-agent] rollout_start idx=%s trajectory=%s path=%s",
+                        idx,
+                        trajectory_ids[idx].to_string(),
+                        env_extras[idx].get("path"),
+                    )
                     try:
                         outputs[idx] = await asyncio.wait_for(
                             self._run_one(
@@ -182,6 +203,14 @@ class TerminalAgentGenerator(GeneratorInterface):
                             "error",
                         )
                     finally:
+                        logger.info(
+                            "[terminal-agent] rollout_done idx=%s trajectory=%s sec=%.2f stop_reason=%s reward=%s",
+                            idx,
+                            trajectory_ids[idx].to_string(),
+                            time.monotonic() - t_worker,
+                            getattr(outputs[idx], "stop_reason", None) if outputs[idx] is not None else None,
+                            getattr(outputs[idx], "reward", None) if outputs[idx] is not None else None,
+                        )
                         progress.update(1)
 
             async with asyncio.TaskGroup() as tg:
@@ -189,7 +218,9 @@ class TerminalAgentGenerator(GeneratorInterface):
                     tg.create_task(_worker(idx))
         finally:
             progress.close()
+            logger.info("[terminal-agent] cleanup_batch_start")
             await provider.cleanup_batch()
+            logger.info("[terminal-agent] cleanup_batch_done")
 
         return self._build_generator_output([o for o in outputs if o is not None])
 
@@ -232,17 +263,39 @@ class TerminalAgentGenerator(GeneratorInterface):
         environment = None
         setup_complete = False
         try:
+            logger.info(
+                "[terminal-agent] env_create_start trajectory=%s path=%s",
+                trajectory_id.to_string(),
+                env_extra.get("path"),
+            )
             environment = await provider.create(env_extra)
+            t_setup = time.monotonic()
+            logger.info("[terminal-agent] env_setup_start trajectory=%s", trajectory_id.to_string())
             await environment.setup()
             setup_complete = True
+            logger.info(
+                "[terminal-agent] env_setup_done trajectory=%s sec=%.2f",
+                trajectory_id.to_string(),
+                time.monotonic() - t_setup,
+            )
+            logger.info("[terminal-agent] agent_loop_start trajectory=%s", trajectory_id.to_string())
             await self._agent_loop(interaction, trajectory_id, environment, sampling_params)
+            logger.info(
+                "[terminal-agent] agent_loop_done trajectory=%s reward=%s correct=%s stop_reason=%s",
+                trajectory_id.to_string(),
+                interaction.reward,
+                interaction.correct,
+                interaction.metadata.get("stop_reason"),
+            )
         except Exception as exc:
             stop_reason = "env_setup_error" if not setup_complete else "error"
             logger.warning("Environment or agent failed for %s: %s", trajectory_id, exc, exc_info=True)
             self._mark_failure(interaction, stop_reason, exc)
         finally:
             if environment is not None:
+                logger.info("[terminal-agent] env_cleanup_start trajectory=%s", trajectory_id.to_string())
                 await environment.cleanup()
+                logger.info("[terminal-agent] env_cleanup_done trajectory=%s", trajectory_id.to_string())
 
         self._ensure_non_empty_completion(interaction)
         self._log_transcript_event(
@@ -311,6 +364,13 @@ class TerminalAgentGenerator(GeneratorInterface):
                 break
 
             t_gen = time.monotonic()
+            logger.info(
+                "[terminal-agent] llm_generate_start trajectory=%s turn=%s context_tokens=%s max_tokens=%s",
+                trajectory_id.to_string(),
+                turn,
+                len(generation_context),
+                max_tokens,
+            )
             token_ids, logprobs = await self._generate_tokens(
                 generation_context,
                 sampling_params,
@@ -321,6 +381,13 @@ class TerminalAgentGenerator(GeneratorInterface):
             generate_sec = time.monotonic() - t_gen
             token_ids = token_ids[:max_tokens]
             logprobs = logprobs[:max_tokens]
+            logger.info(
+                "[terminal-agent] llm_generate_done trajectory=%s turn=%s sec=%.2f tokens=%s",
+                trajectory_id.to_string(),
+                turn,
+                generate_sec,
+                len(token_ids),
+            )
 
             if self.generator_cfg.thinking_handling == "strip_all":
                 add_ids, add_logprobs = self._strip_thinking_from_tokens(token_ids, logprobs)
@@ -389,8 +456,21 @@ class TerminalAgentGenerator(GeneratorInterface):
 
             commands = self._select_commands(parse_result.commands)
             t_exec = time.monotonic()
+            logger.info(
+                "[terminal-agent] command_exec_start trajectory=%s turn=%s commands=%s",
+                trajectory_id.to_string(),
+                turn,
+                [getattr(command, "raw", str(command)) for command in commands],
+            )
             terminal_output = await self._execute_commands(environment, commands)
             exec_sec = time.monotonic() - t_exec
+            logger.info(
+                "[terminal-agent] command_exec_done trajectory=%s turn=%s sec=%.2f output_chars=%s",
+                trajectory_id.to_string(),
+                turn,
+                exec_sec,
+                len(terminal_output),
+            )
             turn_traces.append(
                 self._turn_trace(
                     turn,
@@ -459,6 +539,7 @@ class TerminalAgentGenerator(GeneratorInterface):
             verifier_sec = 0.0
             verifier_error = None
         else:
+            logger.info("[terminal-agent] verifier_start trajectory=%s", trajectory_id.to_string())
             t_verify = time.monotonic()
             verifier_reward, verifier_error = await environment.run_verifier(
                 timeout=self.generator_cfg.verifier_timeout
@@ -466,6 +547,15 @@ class TerminalAgentGenerator(GeneratorInterface):
             verifier_sec = time.monotonic() - t_verify
             interaction.reward = self._compute_reward(verifier_reward, interaction)
             interaction.correct = verifier_reward >= self.generator_cfg.correct_threshold
+            logger.info(
+                "[terminal-agent] verifier_done trajectory=%s sec=%.2f raw_reward=%s reward=%s correct=%s error=%s",
+                trajectory_id.to_string(),
+                verifier_sec,
+                verifier_reward,
+                interaction.reward,
+                interaction.correct,
+                verifier_error,
+            )
 
         interaction.metadata["trace"] = {
             "agent_run_sec": time.monotonic() - t_run_start,

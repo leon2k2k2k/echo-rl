@@ -17,6 +17,19 @@ mkdir -p logs
 # shellcheck source=/dev/null
 source scripts/cluster_env.sh
 
+run_kind="${RUN_KIND:-echo-nextlat}"
+run_id="${RUN_ID:-${run_kind}-smoke-${SLURM_JOB_ID:-local}}"
+export OUTPUT_DIR="${OUTPUT_DIR:-$ECHO_RUNTIME_ROOT/outputs/$run_id}"
+export CONFIG_PATH="${CONFIG_PATH:-echo_configs/qwen3_8b_rl_nextlat_smoke.yaml}"
+mkdir -p "$OUTPUT_DIR" "$OUTPUT_DIR/debug"
+
+# shellcheck source=/dev/null
+source scripts/slurm_debug_logging.sh
+trap 'rc=$?; stop_slurm_heartbeat; collect_slurm_debug_artifacts "$OUTPUT_DIR" "$rc"; exit "$rc"' EXIT
+
+print_slurm_preamble
+start_slurm_heartbeat "$OUTPUT_DIR"
+
 ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
 if [[ "${SKIP_ECHO_RUNTIME_IMPORT_CHECK:-0}" != "1" ]]; then
@@ -45,12 +58,6 @@ fi
 
 bash scripts/sync_echo_to_skyrl.sh
 
-run_kind="${RUN_KIND:-echo-nextlat}"
-run_id="${RUN_ID:-${run_kind}-smoke-${SLURM_JOB_ID:-local}}"
-export OUTPUT_DIR="${OUTPUT_DIR:-$ECHO_RUNTIME_ROOT/outputs/$run_id}"
-export CONFIG_PATH="${CONFIG_PATH:-echo_configs/qwen3_8b_rl_nextlat_smoke.yaml}"
-mkdir -p "$OUTPUT_DIR"
-
 cd "$SKYRL_DIR"
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
@@ -69,4 +76,6 @@ echo "ECHO_DOCKER_PIP_INDEX_URL=$ECHO_DOCKER_PIP_INDEX_URL"
 echo "ECHO_DOCKER_IMAGE_TAR=$ECHO_DOCKER_IMAGE_TAR"
 echo "ECHO_DOCKER_LOAD_IMAGES=$ECHO_DOCKER_LOAD_IMAGES"
 
+echo "ENTRYPOINT_START=$(date -Is)"
 "$PYTHON" -m echo_rl.terminal_agent.entrypoint --config "$CONFIG_PATH"
+echo "ENTRYPOINT_DONE=$(date -Is)"

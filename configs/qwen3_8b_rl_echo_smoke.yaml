@@ -66,6 +66,7 @@ trainer:
 generator:
   transcript_log_path: ${oc.env:OUTPUT_DIR}/terminal_transcripts.jsonl
   log_transcripts_to_console: true
+  transcript_log_max_chars: 0
   n_samples_per_prompt: 1
   eval_n_samples_per_prompt: 1
   step_wise_trajectories: false
@@ -74,8 +75,8 @@ generator:
   max_turns: 2
   max_context_tokens: 4096
   max_tokens_per_generation: 256
-  max_terminal_output_chars: 8000
-  terminal_output_truncation: start
+  max_terminal_output_chars: 100000
+  terminal_output_truncation: start_end
   add_format_warn: true
   world_loss_target: env_only
   nextlat_loss_target: none
