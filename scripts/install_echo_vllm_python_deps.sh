@@ -19,39 +19,10 @@ PY="$ECHO_VENV/bin/python"
 
 "$PY" -m pip install --no-deps \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-  "anthropic" \
-  "blake3" \
-  "cachetools" \
-  "cbor2" \
-  "cloudpickle" \
-  "compressed-tensors" \
-  "depyf" \
-  "diskcache" \
-  "einops" \
   "gguf" \
-  "ijson" \
-  "lark" \
-  "llguidance" \
-  "lm-format-enforcer" \
-  "mistral-common" \
-  "model-hosting-container-standards" \
-  "numba" \
-  "openai-harmony" \
-  "opencv-python-headless" \
-  "outlines-core" \
-  "partial-json-parser" \
-  "prometheus-client" \
-  "prometheus-fastapi-instrumentator" \
-  "py-cpuinfo" \
-  "pybase64" \
-  "python-json-logger" \
-  "pyzmq" \
-  "sentencepiece" \
   "setproctitle" \
   "msgspec" \
-  "watchfiles" \
-  "xgrammar" \
-  "orjson"
+  "uvloop"
 
 echo "vLLM Python deps installed. Run:"
 echo "  $PY $REPO_ROOT/scripts/check_echo_runtime_imports.py"
