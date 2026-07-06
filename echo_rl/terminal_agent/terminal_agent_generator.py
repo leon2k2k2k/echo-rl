@@ -36,6 +36,8 @@ NEXTLAT_LOSS_TARGETS = {
 
 
 def truncate_output(output: str, max_chars: int = 6000, strategy: str = "start_end") -> str:
+    if max_chars <= 0:
+        return output
     if len(output) <= max_chars:
         return output
     original_len = len(output)

@@ -76,7 +76,7 @@ generator:
   max_turns: 2
   max_context_tokens: 4096
   max_tokens_per_generation: 256
-  max_terminal_output_chars: 100000
+  max_terminal_output_chars: 0
   terminal_output_truncation: start_end
   add_format_warn: true
   world_loss_target: env_only
