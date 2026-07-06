@@ -17,9 +17,9 @@ trainer:
     colocate_all: true
     colocate_policy_ref: true
     policy_num_nodes: 1
-    policy_num_gpus_per_node: 8
+    policy_num_gpus_per_node: 4
     ref_num_nodes: 1
-    ref_num_gpus_per_node: 8
+    ref_num_gpus_per_node: 4
   policy:
     model:
       path: Qwen/Qwen3-8B
@@ -46,11 +46,11 @@ trainer:
   epochs: 1
   update_epochs_per_batch: 1
   max_prompt_length: 1536
-  train_batch_size: 8
-  policy_mini_batch_size: 8
+  train_batch_size: 4
+  policy_mini_batch_size: 4
   micro_train_batch_size_per_gpu: 1
   micro_forward_batch_size_per_gpu: 1
-  eval_batch_size: 8
+  eval_batch_size: 4
   eval_before_train: false
   eval_interval: -1
   ckpt_interval: 1
@@ -91,8 +91,8 @@ generator:
   max_concurrent_builds: 8
   max_build_retries: 3
   dataset_num_workers: 4
-  dataset_max_rows: 8
-  eval_dataset_max_rows_per_source: 8
+  dataset_max_rows: 4
+  eval_dataset_max_rows_per_source: 4
   sampling_params:
     max_generate_length: 256
     temperature: 0.8
@@ -104,7 +104,7 @@ generator:
   inference_engine:
     backend: vllm
     run_engines_locally: true
-    num_engines: 8
+    num_engines: 4
     weight_sync_backend: nccl
     tensor_parallel_size: 1
     async_engine: true

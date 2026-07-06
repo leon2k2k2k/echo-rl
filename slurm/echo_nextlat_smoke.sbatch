@@ -4,9 +4,9 @@
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:8
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=512G
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=256G
 #SBATCH --time=01:00:00
 
 set -euo pipefail
