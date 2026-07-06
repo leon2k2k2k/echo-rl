@@ -29,9 +29,12 @@ if ! grep -R "nextlat_coeff" -n echo_rl configs patches >/dev/null; then
 fi
 
 required_files=(
+  configs/qwen3_8b_rl_plain_smoke.yaml
   configs/qwen3_8b_rl_echo_smoke.yaml
   configs/qwen3_8b_rl_nextlat_smoke.yaml
   scripts/cluster_env.sh
+  scripts/diagnose_echo_smoke_failure.py
+  scripts/submit_echo_ablation_smokes.sh
   scripts/sync_echo_to_skyrl.sh
   scripts/submit_echo_smokes.sh
   scripts/grep_smoke_metrics.sh
@@ -63,6 +66,7 @@ fi
 
 bash -n \
   scripts/cluster_env.sh \
+  scripts/submit_echo_ablation_smokes.sh \
   scripts/sync_echo_to_skyrl.sh \
   scripts/submit_echo_smokes.sh \
   scripts/grep_smoke_metrics.sh \
