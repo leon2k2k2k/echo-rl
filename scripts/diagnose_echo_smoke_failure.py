@@ -54,14 +54,17 @@ def print_section(title: str) -> None:
     print(f"\n===== {title} =====")
 
 
-def find_slurm_logs(output_dir: Path, log_dir: Path | None, job_id: str | None) -> list[Path]:
+def find_slurm_logs(output_dir: Path, log_dir: Path | None, job_id: str | None, include_recent: bool) -> list[Path]:
     candidates: list[Path] = []
+    matched_job_logs = False
     if log_dir is not None:
         if job_id:
-            candidates.extend(sorted(log_dir.glob(f"*{job_id}*.out")))
-            candidates.extend(sorted(log_dir.glob(f"*{job_id}*.err")))
-        candidates.extend(sorted(log_dir.glob("echo-rl-smoke-*.out"))[-3:])
-        candidates.extend(sorted(log_dir.glob("echo-rl-smoke-*.err"))[-3:])
+            job_logs = sorted(log_dir.glob(f"*{job_id}*.out")) + sorted(log_dir.glob(f"*{job_id}*.err"))
+            matched_job_logs = bool(job_logs)
+            candidates.extend(job_logs)
+        if include_recent or not matched_job_logs:
+            candidates.extend(sorted(log_dir.glob("echo-rl-smoke-*.out"))[-3:])
+            candidates.extend(sorted(log_dir.glob("echo-rl-smoke-*.err"))[-3:])
     candidates.extend(output_dir.glob("*.log"))
     seen = set()
     unique = []
@@ -209,12 +212,17 @@ def main() -> int:
         help="Directory containing echo-rl-smoke-*.out/.err",
     )
     parser.add_argument("--tail", type=int, default=120, help="Lines to show from each relevant log")
+    parser.add_argument(
+        "--include-recent",
+        action="store_true",
+        help="Also include the latest echo-rl-smoke logs even when --job-id/output dir identifies one job.",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir
     debug_dir = output_dir / "debug"
     job_id = infer_job_id(output_dir, args.job_id)
-    slurm_logs = find_slurm_logs(output_dir, args.log_dir, job_id)
+    slurm_logs = find_slurm_logs(output_dir, args.log_dir, job_id, args.include_recent)
     slurm_texts = list(iter_text_files(slurm_logs))
 
     print_section("run")
