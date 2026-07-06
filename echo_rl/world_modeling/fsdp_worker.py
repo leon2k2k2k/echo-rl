@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import ray
 import torch
 from loguru import logger
+from transformers import AutoConfig
 
 from skyrl.backends.skyrl_train.training_batch import TrainingInputBatch
 from skyrl.backends.skyrl_train.workers.fsdp.fsdp_worker import FSDPPolicyWorkerBase
@@ -26,6 +27,14 @@ from echo_rl.world_modeling.nextlat import (
 
 class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
     """FSDP policy worker that adds ECHO's auxiliary world-modeling loss."""
+
+    def init_model(self, model_path, num_training_steps: int = None):
+        self._defer_nextlat_init = True
+        try:
+            super().init_model(model_path, num_training_steps=num_training_steps)
+        finally:
+            self._defer_nextlat_init = False
+        self._initialize_local_nextlat_dynamics(model_path)
 
     @staticmethod
     def _policy_metric_logging_enabled() -> bool:
@@ -196,6 +205,9 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         return grad_norm
 
     def _nextlat_dynamics(self):
+        local_dynamics = getattr(self, "_local_nextlat_dynamics", None)
+        if local_dynamics is not None:
+            return local_dynamics
         owner = self._nextlat_dynamics_owner()
         return getattr(owner, "nextlat_dynamics", None) if owner is not None else None
 
@@ -229,17 +241,45 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             owner.nextlat_dynamics = dynamics_model
             self._policy_rank_log("nextlat_sync_exclude_done")
 
-    def initialize_aux_policy_modules(self, wrapped_model, model_config) -> None:
+    def _build_nextlat_config(self) -> Optional[NextLatRLConfig]:
         nextlat_coeff = float(getattr(self.cfg.algorithm, "nextlat_coeff", 0.0) or 0.0)
         if nextlat_coeff <= 0:
-            return
-        nextlat_cfg = NextLatRLConfig(
+            return None
+        return NextLatRLConfig(
             coeff=nextlat_coeff,
             mtp_horizon=int(getattr(self.cfg.algorithm, "nextlat_mtp_horizon", 1)),
             proj_factor=float(getattr(self.cfg.algorithm, "nextlat_proj_factor", 1.0)),
             bias=bool(getattr(self.cfg.algorithm, "nextlat_bias", False)),
             norm_eps=float(getattr(self.cfg.algorithm, "nextlat_norm_eps", 1e-5)),
         )
+
+    def _initialize_local_nextlat_dynamics(self, model_path) -> None:
+        nextlat_cfg = self._build_nextlat_config()
+        if nextlat_cfg is None:
+            return
+        model_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        dynamics_model = NextLatDynamicsModel(model_config.hidden_size, nextlat_cfg)
+        base_param = next(self.model.parameters())
+        if hasattr(base_param, "to_local"):
+            base_param = base_param.to_local()
+        dtype = base_param.dtype if base_param.dtype.is_floating_point else torch.float32
+        dynamics_model.to(device=base_param.device, dtype=dtype)
+        self._local_nextlat_dynamics = dynamics_model
+        if self.optimizer is not None:
+            self.optimizer.add_param_group({"params": list(dynamics_model.parameters())})
+        self._policy_rank_log(
+            "nextlat_local_init",
+            params=sum(p.numel() for p in dynamics_model.parameters() if p.requires_grad),
+            dtype=str(dtype),
+            device=str(base_param.device),
+        )
+
+    def initialize_aux_policy_modules(self, wrapped_model, model_config) -> None:
+        nextlat_cfg = self._build_nextlat_config()
+        if nextlat_cfg is None:
+            return
+        if getattr(self, "_defer_nextlat_init", False):
+            return
         wrapped_model.model.nextlat_dynamics = NextLatDynamicsModel(model_config.hidden_size, nextlat_cfg)
 
     def needs_aux_policy_hidden_states(self, loss_config: Any) -> bool:
