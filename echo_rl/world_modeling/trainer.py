@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import List, Optional, Tuple, Union
+import os
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
@@ -16,6 +18,39 @@ from loguru import logger
 
 class EchoPPOTrainer(RayPPOTrainer):
     """Ray PPO trainer extension that carries world-model masks as generic extras."""
+
+    @staticmethod
+    def _policy_metric_logging_enabled() -> bool:
+        return os.environ.get("ECHO_LOG_POLICY_TRAIN_METRICS", "1") != "0"
+
+    @staticmethod
+    def _tensor_sum_for_log(value: Any) -> Optional[float]:
+        if value is None or not hasattr(value, "detach"):
+            return None
+        return float(value.detach().float().sum().cpu().item())
+
+    def _training_batch_summary_for_log(self, data: TrainingInputBatch) -> Dict[str, Any]:
+        sequences = data.get("sequences")
+        seq_len = int(sequences.shape[1]) if sequences is not None and hasattr(sequences, "shape") else None
+        boundaries = (data.metadata or {}).get("policy_mini_batch_boundaries")
+        return {
+            "batch": len(data),
+            "seq_len": seq_len,
+            "response_length": (data.metadata or {}).get("response_length"),
+            "pad_size": (data.metadata or {}).get("pad_size", 0),
+            "policy_minibatches": len(boundaries) if boundaries is not None else None,
+            "loss_tokens": self._tensor_sum_for_log(data.get("loss_mask")),
+            "world_tokens": self._tensor_sum_for_log(data.get("world_loss_mask")),
+            "world_warning_tokens": self._tensor_sum_for_log(data.get("world_warning_mask")),
+            "world_env_tokens": self._tensor_sum_for_log(data.get("world_env_mask")),
+            "nextlat_tokens": self._tensor_sum_for_log(data.get("nextlat_loss_mask")),
+            "adv_mean": float(data["advantages"].detach().float().mean().cpu().item())
+            if data.get("advantages") is not None
+            else None,
+            "reward_mean": float(data["rewards"].detach().float().mean().cpu().item())
+            if data.get("rewards") is not None
+            else None,
+        }
 
     def convert_to_training_input(self, generator_output: GeneratorOutput, uids: List[str]) -> TrainingInputBatch:
         training_input = super().convert_to_training_input(generator_output, uids)
@@ -235,4 +270,30 @@ class EchoPPOTrainer(RayPPOTrainer):
     def train_critic_and_policy(self, data: TrainingInputBatch):
         data.metadata["world_model_schedule_step"] = max(self.global_step - 1, 0)
         data.metadata["total_training_steps"] = self.total_training_steps or 0
-        return super().train_critic_and_policy(data)
+        if not self._policy_metric_logging_enabled():
+            return super().train_critic_and_policy(data)
+
+        summary = self._training_batch_summary_for_log(data)
+        logger.info(
+            "[policy-train] trainer_input "
+            f"global_step={self.global_step} total_steps={self.total_training_steps} "
+            f"batch={summary['batch']} seq_len={summary['seq_len']} response_length={summary['response_length']} "
+            f"pad_size={summary['pad_size']} policy_minibatches={summary['policy_minibatches']} "
+            f"loss_tokens={summary['loss_tokens']} world_tokens={summary['world_tokens']} "
+            f"warning_tokens={summary['world_warning_tokens']} env_tokens={summary['world_env_tokens']} "
+            f"nextlat_tokens={summary['nextlat_tokens']} adv_mean={summary['adv_mean']} reward_mean={summary['reward_mean']}"
+        )
+        started = time.monotonic()
+        try:
+            status = super().train_critic_and_policy(data)
+        except Exception:
+            logger.exception(
+                f"[policy-train] trainer_failed global_step={self.global_step} sec={time.monotonic() - started:.2f}"
+            )
+            raise
+        logger.info(
+            "[policy-train] trainer_done "
+            f"global_step={self.global_step} sec={time.monotonic() - started:.2f} "
+            f"status={{{', '.join(f'{key}: {value}' for key, value in sorted(status.items()))}}}"
+        )
+        return status

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import math
+import os
+import time
 from dataclasses import replace
 from typing import Any, Dict, Optional
 
 import ray
 import torch
+from loguru import logger
 
 from skyrl.backends.skyrl_train.training_batch import TrainingInputBatch
 from skyrl.backends.skyrl_train.workers.fsdp.fsdp_worker import FSDPPolicyWorkerBase
@@ -21,6 +25,115 @@ from echo_rl.world_modeling.nextlat import (
 
 class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
     """FSDP policy worker that adds ECHO's auxiliary world-modeling loss."""
+
+    @staticmethod
+    def _policy_metric_logging_enabled() -> bool:
+        return os.environ.get("ECHO_LOG_POLICY_TRAIN_METRICS", "1") != "0"
+
+    @staticmethod
+    def _scalar_for_log(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if hasattr(value, "detach"):
+            value = value.detach()
+            if value.numel() != 1:
+                value = value.float().mean()
+            return float(value.float().cpu().item())
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _tensor_sum_for_log(value: Any) -> Optional[float]:
+        if value is None or not hasattr(value, "detach"):
+            return None
+        return float(value.detach().float().sum().cpu().item())
+
+    def _rank_for_log(self) -> int:
+        try:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                return int(torch.distributed.get_rank())
+        except Exception:
+            pass
+        return int(getattr(self, "_rank", -1))
+
+    def _batch_summary_for_log(self, data: TrainingInputBatch) -> Dict[str, Any]:
+        sequences = data.get("sequences")
+        seq_len = int(sequences.shape[1]) if sequences is not None and hasattr(sequences, "shape") else None
+        micro_batch_size = int(getattr(self.cfg, "micro_train_batch_size_per_gpu", 1) or 1)
+        return {
+            "batch": len(data),
+            "micro_batch_size": micro_batch_size,
+            "micro_batches": math.ceil(len(data) / micro_batch_size) if micro_batch_size > 0 else None,
+            "seq_len": seq_len,
+            "response_length": (data.metadata or {}).get("response_length"),
+            "loss_tokens": self._tensor_sum_for_log(data.get("loss_mask")),
+            "world_tokens": self._tensor_sum_for_log(data.get("world_loss_mask")),
+            "world_warning_tokens": self._tensor_sum_for_log(data.get("world_warning_mask")),
+            "world_env_tokens": self._tensor_sum_for_log(data.get("world_env_mask")),
+            "nextlat_tokens": self._tensor_sum_for_log(data.get("nextlat_loss_mask")),
+        }
+
+    def forward_backward(
+        self,
+        data: TrainingInputBatch,
+        loss_fn: Optional[str] = None,
+        loss_fn_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, float]:
+        if not self._policy_metric_logging_enabled():
+            return super().forward_backward(data, loss_fn=loss_fn, loss_fn_config=loss_fn_config)
+
+        started = time.monotonic()
+        rank = self._rank_for_log()
+        summary = self._batch_summary_for_log(data)
+        logger.info(
+            "[policy-train] forward_backward_start "
+            f"rank={rank} loss_fn={loss_fn or self.cfg.algorithm.policy_loss_type} "
+            f"batch={summary['batch']} micro_batch_size={summary['micro_batch_size']} "
+            f"micro_batches={summary['micro_batches']} seq_len={summary['seq_len']} "
+            f"response_length={summary['response_length']} loss_tokens={summary['loss_tokens']} "
+            f"world_tokens={summary['world_tokens']} warning_tokens={summary['world_warning_tokens']} "
+            f"env_tokens={summary['world_env_tokens']} nextlat_tokens={summary['nextlat_tokens']}"
+        )
+        try:
+            status = super().forward_backward(data, loss_fn=loss_fn, loss_fn_config=loss_fn_config)
+        except Exception:
+            logger.exception(f"[policy-train] forward_backward_failed rank={rank} sec={time.monotonic() - started:.2f}")
+            raise
+
+        elapsed = time.monotonic() - started
+        tokens = summary["loss_tokens"] or summary["world_tokens"] or 0.0
+        tokens_per_sec = (tokens / elapsed) if elapsed > 0 and tokens else 0.0
+        logger.info(
+            "[policy-train] forward_backward_done "
+            f"rank={rank} sec={elapsed:.2f} tokens_per_sec={tokens_per_sec:.2f} "
+            f"final_loss={status.get('final_loss')} policy_loss={status.get('policy_loss')} "
+            f"policy_entropy={status.get('policy_entropy')} world_loss_scaled={status.get('loss_metrics/world_loss_scaled')} "
+            f"world_ce={status.get('loss_metrics/world_ce_selected_per_token')} "
+            f"world_policy_ratio={status.get('loss_metrics/world_policy_loss_ratio')} "
+            f"nextlat_loss_scaled={status.get('loss_metrics/nextlat_loss_scaled')}"
+        )
+        return status
+
+    def optim_step(self) -> float:
+        if not self._policy_metric_logging_enabled():
+            return super().optim_step()
+
+        started = time.monotonic()
+        rank = self._rank_for_log()
+        logger.info(f"[policy-train] optim_step_start rank={rank}")
+        try:
+            grad_norm = super().optim_step()
+        except Exception:
+            logger.exception(f"[policy-train] optim_step_failed rank={rank} sec={time.monotonic() - started:.2f}")
+            raise
+
+        logger.info(
+            "[policy-train] optim_step_done "
+            f"rank={rank} sec={time.monotonic() - started:.2f} grad_norm={grad_norm} lr={self.get_lr()}"
+        )
+        return grad_norm
 
     def _nextlat_dynamics(self):
         for module in (
@@ -181,6 +294,26 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             )
             world_metrics["nextlat_param_norm"] = param_norm.sqrt()
             world_metrics["nextlat_grad_norm_pre_backward"] = grad_norm.sqrt() if has_grad else grad_norm
+        if self._policy_metric_logging_enabled():
+            log_values = {
+                "policy_loss": self._scalar_for_log(policy_loss),
+                "aux_loss": self._scalar_for_log(aux_loss),
+                "world_loss_scaled": self._scalar_for_log(world_metrics.get("world_loss_scaled")),
+                "world_loss_unscaled": self._scalar_for_log(world_metrics.get("world_loss_unscaled")),
+                "world_ce": self._scalar_for_log(world_metrics.get("world_ce_selected_per_token")),
+                "world_tokens": self._scalar_for_log(world_metrics.get("world_tokens_selected")),
+                "world_warning_tokens": self._scalar_for_log(world_metrics.get("world_tokens_warning")),
+                "world_env_tokens": self._scalar_for_log(world_metrics.get("world_tokens_env")),
+                "world_policy_ratio": self._scalar_for_log(world_metrics.get("world_policy_loss_ratio")),
+                "nextlat_loss_scaled": self._scalar_for_log(world_metrics.get("nextlat_loss_scaled")),
+                "nextlat_ratio": self._scalar_for_log(world_metrics.get("nextlat_policy_loss_ratio")),
+            }
+            logger.info(
+                "[policy-train] aux_loss "
+                f"rank={self._rank_for_log()} microbatch_weight={microbatch_weight:.6g} "
+                f"grad_sum_correction={grad_sum_correction_factor:.6g} "
+                + " ".join(f"{key}={value}" for key, value in log_values.items())
+            )
         return aux_loss, world_metrics
 
 
