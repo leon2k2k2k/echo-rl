@@ -19,6 +19,7 @@ echo "SKYRL_DIR=$SKYRL_DIR"
 echo "ECHO_RUNTIME_ROOT=$ECHO_RUNTIME_ROOT"
 echo "PYTHON=$PYTHON"
 
+ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
 
 if ! grep -R "nextlat_coeff" -n echo_rl configs patches >/dev/null; then

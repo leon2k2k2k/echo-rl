@@ -17,6 +17,7 @@ mkdir -p logs
 # shellcheck source=/dev/null
 source scripts/cluster_env.sh
 
+ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
 
 bash scripts/sync_echo_to_skyrl.sh

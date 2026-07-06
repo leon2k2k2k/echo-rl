@@ -11,6 +11,7 @@ export PARTITION="${PARTITION:-a01}"
 export ECHO_LOG_DIR="${ECHO_LOG_DIR:-$ECHO_RUNTIME_ROOT/logs}"
 mkdir -p "$ECHO_LOG_DIR"
 
+ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
 
 export RUN_KIND=echo-base

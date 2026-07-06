@@ -28,6 +28,13 @@ export TOKENIZERS_PARALLELISM=false
 
 mkdir -p "$ECHO_RUNTIME_ROOT" "$HF_HOME" "$HF_HUB_CACHE" "$HF_DATASETS_CACHE"
 mkdir -p "$ECHO_RUNTIME_ROOT/logs" "$ECHO_RUNTIME_ROOT/outputs" "$ECHO_RUNTIME_ROOT/results" "$ECHO_RUNTIME_ROOT/tmp"
+mkdir -p "$ECHO_RUNTIME_ROOT/data"
+
+export ECHO_SMOKE_DATA_DIR="${ECHO_SMOKE_DATA_DIR:-$ECHO_RUNTIME_ROOT/data}"
+export ECHO_DEFAULT_TRAIN_PARQUET="$ECHO_SMOKE_DATA_DIR/terminal_agent_smoke_train.parquet"
+export ECHO_DEFAULT_VAL_PARQUET="$ECHO_SMOKE_DATA_DIR/terminal_agent_smoke_val.parquet"
+export TERMINAL_AGENT_TRAIN_PARQUET="${TERMINAL_AGENT_TRAIN_PARQUET:-$ECHO_DEFAULT_TRAIN_PARQUET}"
+export TERMINAL_AGENT_VAL_PARQUET="${TERMINAL_AGENT_VAL_PARQUET:-$ECHO_DEFAULT_VAL_PARQUET}"
 
 if [[ -x "$ECHO_VENV/bin/python" && ( -z "${PYTHON:-}" || "${PYTHON:-}" == "python" || "${PYTHON:-}" == "python3" ) ]]; then
   export PYTHON="$ECHO_VENV/bin/python"
@@ -35,6 +42,22 @@ fi
 export PYTHON="${PYTHON:-python3}"
 
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+ensure_terminal_agent_smoke_data() {
+  if [[ "$TERMINAL_AGENT_TRAIN_PARQUET" != "$ECHO_DEFAULT_TRAIN_PARQUET" ||
+        "$TERMINAL_AGENT_VAL_PARQUET" != "$ECHO_DEFAULT_VAL_PARQUET" ]]; then
+    return 0
+  fi
+
+  if [[ -f "$TERMINAL_AGENT_TRAIN_PARQUET" && -f "$TERMINAL_AGENT_VAL_PARQUET" ]]; then
+    return 0
+  fi
+
+  "$PYTHON" "$ECHO_REPO/scripts/create_terminal_agent_smoke_data.py" \
+    --train "$TERMINAL_AGENT_TRAIN_PARQUET" \
+    --val "$TERMINAL_AGENT_VAL_PARQUET" \
+    --rows 4
+}
 
 check_terminal_agent_data_files() {
   local missing=0
