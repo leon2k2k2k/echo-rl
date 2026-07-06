@@ -214,6 +214,7 @@ class _SharedTaskImage:
         self._env_name: str | None = None
         self._task_env_config: EnvironmentConfig | None = None
         self._has_local_cached_image = False
+        self._has_external_prebuilt_image = False
         self._is_setup = False
 
     @property
@@ -230,7 +231,9 @@ class _SharedTaskImage:
 
     @property
     def has_prebuilt_image(self) -> bool:
-        return self._is_setup and bool(self._task_env_config.docker_image)
+        return self._is_setup and (
+            self._has_local_cached_image or self._has_external_prebuilt_image
+        )
 
     def setup(self) -> None:
         if self._is_setup:
@@ -254,12 +257,16 @@ class _SharedTaskImage:
         if self._cpus is not None:
             self._task_env_config.cpus = self._cpus
         self._env_name = self._task.name
+        configured_image = self._task_env_config.docker_image
         if _cache_task_images_enabled():
             stable_image = self.stable_image
             if stable_image and _docker_image_exists(stable_image):
                 logger.info("Reusing cached task image %s for %s", stable_image, self._task_name)
                 self._task_env_config.docker_image = stable_image
                 self._has_local_cached_image = True
+            elif configured_image == stable_image:
+                self._task_env_config.docker_image = None
+        self._has_external_prebuilt_image = bool(self._task_env_config.docker_image) and not self._has_local_cached_image
         self._is_setup = True
 
     def create_environment(self, rollout_id: str, force_build: bool = False) -> HarborEnvironment:
@@ -273,7 +280,7 @@ class _SharedTaskImage:
             rollout_id=rollout_id,
             base_temp_dir=self._base_temp_dir,
             force_build=force_build,
-            use_prebuilt_image=self.has_prebuilt_image,
+            use_prebuilt_image=(not force_build and self.has_prebuilt_image),
         )
 
     async def build_image(self) -> None:
