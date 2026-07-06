@@ -4,7 +4,7 @@ set -euo pipefail
 # Submit a real-TMax NextLat-only control:
 # - uses cached TMax smoke parquets/images
 # - disables ECHO world-token CE loss
-# - keeps NextLat auxiliary loss enabled on environment observation tokens
+# - keeps NextLat auxiliary loss enabled on completion tokens
 # - keeps the same 4-GPU FSDP/vLLM shape as the ECHO probes
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
