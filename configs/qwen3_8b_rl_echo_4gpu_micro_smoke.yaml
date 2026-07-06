@@ -67,7 +67,7 @@ trainer:
 generator:
   transcript_log_path: ${oc.env:OUTPUT_DIR}/terminal_transcripts.jsonl
   log_transcripts_to_console: true
-  n_samples_per_prompt: 1
+  n_samples_per_prompt: 4
   eval_n_samples_per_prompt: 1
   step_wise_trajectories: false
   parser_name: qwen35
