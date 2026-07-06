@@ -53,8 +53,8 @@ trainer:
   micro_forward_batch_size_per_gpu: 1
   eval_batch_size: 4
   eval_before_train: false
-  eval_interval: -1
-  ckpt_interval: 2
+  eval_interval: 3
+  ckpt_interval: -1
   hf_save_interval: -1
   ckpt_path: ${oc.env:OUTPUT_DIR}/ckpts
   export_path: ${oc.env:OUTPUT_DIR}/exports
@@ -96,7 +96,7 @@ generator:
   max_build_retries: 3
   dataset_num_workers: 4
   dataset_max_rows: 12
-  eval_dataset_max_rows_per_source: 16
+  eval_dataset_max_rows_per_source: 4
   sampling_params:
     max_generate_length: 1024
     temperature: 0.8
