@@ -129,14 +129,14 @@ class HarborEnvironment:
         try:
             result = await self._environment._run_docker_compose_command(["images", "--format", "json"], check=False)
             images = _parse_compose_images_json(result.stdout or "")
-            if not images:
-                return
-            image = images[0]
-            repository = image.get("Repository") or image.get("Name")
-            tag = image.get("Tag") or "latest"
-            if not repository:
-                return
-            source_image = f"{repository}:{tag}"
+            source_image = _source_image_from_compose_images(images)
+            if source_image is None:
+                source_image = await _find_recent_task_image(self._shared_env_name)
+            if source_image is None:
+                raise RuntimeError(
+                    f"Could not find built image for {self._shared_env_name}; "
+                    f"docker compose images output was: {result.stdout!r}"
+                )
             proc = await asyncio.subprocess.create_subprocess_exec(
                 "docker",
                 "tag",
@@ -147,9 +147,10 @@ class HarborEnvironment:
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.warning("Failed to tag %s as %s: %s", source_image, target_image, stderr.decode())
+                raise RuntimeError(f"Failed to tag {source_image} as {target_image}: {stderr.decode()}")
+            logger.info("Tagged built task image %s as %s", source_image, target_image)
         except Exception as exc:
-            logger.warning("Could not query/tag container image: %s", exc)
+            raise RuntimeError(f"Could not query/tag container image: {exc}") from exc
 
     @staticmethod
     def _ensure_pull_policy_override(environment_dir: Path) -> None:
@@ -578,6 +579,39 @@ async def _docker_image_exists_async(image: str) -> bool:
         stderr=asyncio.subprocess.DEVNULL,
     )
     return await proc.wait() == 0
+
+
+def _source_image_from_compose_images(images: list[dict[str, Any]]) -> str | None:
+    for image in images:
+        repository = image.get("Repository") or image.get("Name")
+        tag = image.get("Tag") or "latest"
+        if repository and repository != "<none>" and tag != "<none>":
+            return f"{repository}:{tag}"
+    return None
+
+
+async def _find_recent_task_image(env_name: str) -> str | None:
+    task_token = env_name.rstrip("/").split("/")[-1]
+    proc = await asyncio.subprocess.create_subprocess_exec(
+        "docker",
+        "image",
+        "ls",
+        "--format",
+        "{{.Repository}}:{{.Tag}}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("Could not list Docker images while searching for %s: %s", env_name, stderr.decode())
+        return None
+    for line in stdout.decode().splitlines():
+        image = line.strip()
+        if not image or image.startswith("<none>:") or image.startswith("hb__"):
+            continue
+        if task_token in image and image.endswith(":latest"):
+            return image
+    return None
 
 
 def _parse_compose_images_json(stdout: str) -> list[dict[str, Any]]:
