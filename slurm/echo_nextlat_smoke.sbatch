@@ -19,6 +19,7 @@ source scripts/cluster_env.sh
 
 ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
+"$PYTHON" scripts/check_echo_runtime_imports.py
 
 bash scripts/sync_echo_to_skyrl.sh
 

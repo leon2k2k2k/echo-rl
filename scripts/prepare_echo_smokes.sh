@@ -69,6 +69,7 @@ bash -n \
   scripts/tail_echo_smokes.sh \
   slurm/echo_nextlat_smoke.sbatch
 
+"$PYTHON" scripts/check_echo_runtime_imports.py
 bash scripts/sync_echo_to_skyrl.sh
 
 cat <<EOF

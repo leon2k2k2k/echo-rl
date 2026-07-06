@@ -13,6 +13,7 @@ mkdir -p "$ECHO_LOG_DIR"
 
 ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
+"$PYTHON" scripts/check_echo_runtime_imports.py
 
 export RUN_KIND=echo-base
 export CONFIG_PATH=echo_configs/qwen3_8b_rl_echo_smoke.yaml
