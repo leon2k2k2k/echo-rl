@@ -265,14 +265,35 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         dtype = base_param.dtype if base_param.dtype.is_floating_point else torch.float32
         dynamics_model.to(device=base_param.device, dtype=dtype)
         self._local_nextlat_dynamics = dynamics_model
-        if self.optimizer is not None:
-            self.optimizer.add_param_group({"params": list(dynamics_model.parameters())})
+        self._add_local_nextlat_optimizer_group(dynamics_model)
         self._policy_rank_log(
             "nextlat_local_init",
             params=sum(p.numel() for p in dynamics_model.parameters() if p.requires_grad),
             dtype=str(dtype),
             device=str(base_param.device),
         )
+
+    def _add_local_nextlat_optimizer_group(self, dynamics_model: NextLatDynamicsModel) -> None:
+        if self.optimizer is None:
+            return
+        base_group = self.optimizer.param_groups[0]
+        base_lr = base_group.get("initial_lr", base_group.get("lr", 0.0))
+        self.optimizer.add_param_group(
+            {
+                "params": list(dynamics_model.parameters()),
+                "lr": base_group.get("lr", base_lr),
+                "initial_lr": base_lr,
+            }
+        )
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is None:
+            return
+        if hasattr(scheduler, "base_lrs"):
+            scheduler.base_lrs.append(base_lr)
+        if hasattr(scheduler, "lr_lambdas") and scheduler.lr_lambdas:
+            scheduler.lr_lambdas.append(scheduler.lr_lambdas[0])
+        if hasattr(scheduler, "_last_lr"):
+            scheduler._last_lr.append(self.optimizer.param_groups[-1].get("lr", base_lr))
 
     def initialize_aux_policy_modules(self, wrapped_model, model_config) -> None:
         nextlat_cfg = self._build_nextlat_config()
