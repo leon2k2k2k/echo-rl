@@ -35,6 +35,7 @@ export ECHO_DEFAULT_TRAIN_PARQUET="$ECHO_SMOKE_DATA_DIR/terminal_agent_smoke_tra
 export ECHO_DEFAULT_VAL_PARQUET="$ECHO_SMOKE_DATA_DIR/terminal_agent_smoke_val.parquet"
 export TERMINAL_AGENT_TRAIN_PARQUET="${TERMINAL_AGENT_TRAIN_PARQUET:-$ECHO_DEFAULT_TRAIN_PARQUET}"
 export TERMINAL_AGENT_VAL_PARQUET="${TERMINAL_AGENT_VAL_PARQUET:-$ECHO_DEFAULT_VAL_PARQUET}"
+export QWEN3_8B_MODEL_PATH="${QWEN3_8B_MODEL_PATH:-Qwen/Qwen3-8B}"
 
 if [[ -x "$ECHO_VENV/bin/python" && ( -z "${PYTHON:-}" || "${PYTHON:-}" == "python" || "${PYTHON:-}" == "python3" ) ]]; then
   export PYTHON="$ECHO_VENV/bin/python"

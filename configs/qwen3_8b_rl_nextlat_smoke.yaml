@@ -10,7 +10,7 @@ data:
     - name: terminal_agent_train
       path: ${oc.env:TERMINAL_AGENT_VAL_PARQUET}
 
-tokenizer_path: Qwen/Qwen3-8B
+tokenizer_path: ${oc.env:QWEN3_8B_MODEL_PATH,Qwen/Qwen3-8B}
 chat_template_path: echo_rl/terminal_agent/chat_templates/qwen3_xml_tool_calling.jinja
 
 trainer:
@@ -23,7 +23,7 @@ trainer:
     ref_num_gpus_per_node: 4
   policy:
     model:
-      path: Qwen/Qwen3-8B
+      path: ${oc.env:QWEN3_8B_MODEL_PATH,Qwen/Qwen3-8B}
     optimizer_config:
       lr: 1.0e-6
       adam_betas: [0.9, 0.999]
