@@ -186,7 +186,79 @@ class EchoPPOTrainer(RayPPOTrainer):
         if rewards and not isinstance(rewards[0], list):
             self._apply_world_model_only(generator_output)
             self._apply_world_model_filter(generator_output, uids)
+            generator_output, uids = self._drop_no_signal_samples(generator_output, uids)
         return super().postprocess_generator_output(generator_output, uids)
+
+    def _drop_no_signal_samples(
+        self, generator_output: GeneratorOutput, uids: List[str]
+    ) -> Tuple[GeneratorOutput, List[str]]:
+        n = len(generator_output.get("response_ids") or [])
+        if n == 0:
+            return generator_output, uids
+
+        no_signal_indices = [idx for idx in range(n) if self._sample_has_no_training_signal(generator_output, idx)]
+        if not no_signal_indices:
+            self.all_metrics["generate/no_signal_samples_dropped"] = 0.0
+            return generator_output, uids
+
+        no_signal_set = set(no_signal_indices)
+        keep_indices = [idx for idx in range(n) if idx not in no_signal_set]
+        if not keep_indices:
+            logger.warning(
+                "[policy-train] no_signal_drop_skipped_all_samples "
+                f"batch={n} no_signal_samples={len(no_signal_indices)}"
+            )
+            self.all_metrics["generate/no_signal_samples_dropped"] = 0.0
+            return generator_output, uids
+
+        trajectories = generator_output.get("trajectory_ids") or []
+        metadata = generator_output.get("trajectory_metadata") or []
+        dropped = []
+        for idx in no_signal_indices:
+            meta = metadata[idx] if idx < len(metadata) and isinstance(metadata[idx], dict) else {}
+            dropped.append(
+                {
+                    "idx": idx,
+                    "trajectory": self._trajectory_id_for_log(trajectories[idx]) if idx < len(trajectories) else None,
+                    "path": meta.get("path"),
+                    "stop_reason": meta.get("stop_reason"),
+                }
+            )
+
+        logger.warning(
+            "[policy-train] dropped_no_signal_samples "
+            f"count={len(no_signal_indices)} kept={len(keep_indices)} dropped={dropped}"
+        )
+        self.all_metrics["generate/no_signal_samples_dropped"] = float(len(no_signal_indices))
+        return self._filter_generator_output_rows(generator_output, keep_indices, n), [uids[i] for i in keep_indices]
+
+    def _sample_has_no_training_signal(self, generator_output: GeneratorOutput, idx: int) -> bool:
+        mask_keys = (
+            "loss_masks",
+            "world_loss_masks",
+            "world_warning_masks",
+            "world_env_masks",
+            "nextlat_loss_masks",
+        )
+        for key in mask_keys:
+            rows = generator_output.get(key)
+            if rows is None or idx >= len(rows):
+                return False
+            if (self._list_sum_for_log(rows[idx]) or 0.0) != 0.0:
+                return False
+        return True
+
+    @staticmethod
+    def _filter_generator_output_rows(
+        generator_output: GeneratorOutput, keep_indices: List[int], original_len: int
+    ) -> GeneratorOutput:
+        filtered: GeneratorOutput = {}
+        for key, value in generator_output.items():
+            if isinstance(value, list) and len(value) == original_len:
+                filtered[key] = [value[i] for i in keep_indices]
+            else:
+                filtered[key] = value
+        return filtered
 
     def _apply_world_model_only(self, generator_output: GeneratorOutput) -> None:
         world_model_only = generator_output.get("world_model_only")
