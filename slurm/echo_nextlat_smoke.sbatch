@@ -17,6 +17,8 @@ mkdir -p logs
 # shellcheck source=/dev/null
 source scripts/cluster_env.sh
 
+check_terminal_agent_data_files
+
 bash scripts/sync_echo_to_skyrl.sh
 
 run_kind="${RUN_KIND:-echo-nextlat}"

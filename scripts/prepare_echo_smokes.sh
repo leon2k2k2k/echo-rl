@@ -19,6 +19,8 @@ echo "SKYRL_DIR=$SKYRL_DIR"
 echo "ECHO_RUNTIME_ROOT=$ECHO_RUNTIME_ROOT"
 echo "PYTHON=$PYTHON"
 
+check_terminal_agent_data_files
+
 if ! grep -R "nextlat_coeff" -n echo_rl configs patches >/dev/null; then
   echo "error: this echo-rl checkout does not contain the NextLat implementation." >&2
   echo "       Fetch/check out leon2k2k2k/echo-rl-nextlat first." >&2

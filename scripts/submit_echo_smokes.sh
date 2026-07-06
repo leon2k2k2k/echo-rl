@@ -11,6 +11,8 @@ export PARTITION="${PARTITION:-a01}"
 export ECHO_LOG_DIR="${ECHO_LOG_DIR:-$ECHO_RUNTIME_ROOT/logs}"
 mkdir -p "$ECHO_LOG_DIR"
 
+check_terminal_agent_data_files
+
 export RUN_KIND=echo-base
 export CONFIG_PATH=echo_configs/qwen3_8b_rl_echo_smoke.yaml
 base_job="$(

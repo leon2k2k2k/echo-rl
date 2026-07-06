@@ -35,3 +35,34 @@ fi
 export PYTHON="${PYTHON:-python3}"
 
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+
+check_terminal_agent_data_files() {
+  local missing=0
+  local name value
+
+  for name in TERMINAL_AGENT_TRAIN_PARQUET TERMINAL_AGENT_VAL_PARQUET; do
+    value="${!name:-}"
+    if [[ -z "$value" || ! -f "$value" ]]; then
+      echo "error: $name does not point to an existing data file: ${value:-<unset>}" >&2
+      missing=1
+    fi
+  done
+
+  if (( missing )); then
+    cat >&2 <<'EOF'
+
+Find the terminal-agent parquet files on Alex, then export the paths before submitting:
+
+  find /home/fit/alex/WORK /WORK/PUBLIC/alex_work /mnt -type f \
+    \( -name 'train*sa_q35xml*.parquet' -o -name 'val*sa_q35xml*.parquet' \) \
+    2>/dev/null | sort
+
+  export TERMINAL_AGENT_TRAIN_PARQUET=/path/to/train.parquet
+  export TERMINAL_AGENT_VAL_PARQUET=/path/to/val.parquet
+  bash scripts/submit_echo_smokes.sh
+
+Or put those exports in configs/alex_cluster.env for this checkout.
+EOF
+    return 1
+  fi
+}
