@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${1:-} == "" ]]; then
+  echo "usage: $0 JOBID" >&2
+  exit 2
+fi
+
+job_id="$1"
+shift || true
+log_glob=(logs/*-"$job_id".out logs/*-"$job_id".err)
+
+grep -Eh \
+  "RUN_KIND=|CONFIG_PATH=|OUTPUT_DIR=|Step [0-9]+:|policy_loss|final_loss|grad_norm|world_loss|world_ce|world_tokens|nextlat_|Traceback|RuntimeError|OutOfMemory|CUDA out of memory|FAILED|ModuleNotFound|FileNotFound" \
+  "${log_glob[@]}" "$@" | tail -200
