@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -548,15 +549,53 @@ def _inject_docker_wheelhouse(environment_dir: Path) -> None:
         if not script.exists():
             continue
         text = script.read_text()
-        text = text.replace(
-            "pip3 install pytest",
-            pytest_install,
-        )
-        text = text.replace(
-            "pip install pytest",
-            pytest_install.replace("pip3 ", "pip ", 1),
-        )
+        if use_wheelhouse:
+            text = text.replace(
+                "pip3 install pytest",
+                pytest_install,
+            )
+            text = text.replace(
+                "pip install pytest",
+                pytest_install.replace("pip3 ", "pip ", 1),
+            )
+        else:
+            text = _add_pip_mirror_to_installs(text, pip_index_url)
         script.write_text(text)
+
+
+def _add_pip_mirror_to_installs(text: str, pip_index_url: str) -> str:
+    lines = text.splitlines(keepends=True)
+    rewritten: list[str] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        match = re.match(r"^(\s*)(pip3?|python3?\s+-m\s+pip)\s+install\b", line)
+        if not match:
+            rewritten.append(line)
+            idx += 1
+            continue
+
+        block = [line]
+        idx += 1
+        while block[-1].rstrip().endswith("\\") and idx < len(lines):
+            block.append(lines[idx])
+            idx += 1
+
+        block_text = "".join(block)
+        if re.search(r"(^|\s)(--index-url|-i|--no-index)(\s|=)", block_text):
+            rewritten.extend(block)
+            continue
+
+        cmd = match.group(2)
+        block[0] = re.sub(
+            rf"({re.escape(cmd)}\s+install\b)",
+            rf"\1 --timeout 60 --retries 5 -i {pip_index_url}",
+            block[0],
+            count=1,
+        )
+        rewritten.extend(block)
+
+    return "".join(rewritten)
 
 
 def _docker_image_exists(image: str) -> bool:
