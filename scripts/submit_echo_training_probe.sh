@@ -22,6 +22,10 @@ export ECHO_DEFAULT_VAL_PARQUET="$ECHO_SMOKE_DATA_DIR/terminal_agent_smoke_val.p
 export TERMINAL_AGENT_TRAIN_PARQUET="$ECHO_DEFAULT_TRAIN_PARQUET"
 export TERMINAL_AGENT_VAL_PARQUET="$ECHO_DEFAULT_VAL_PARQUET"
 
+if [[ "${ECHO_REGENERATE_SMOKE_DATA:-1}" == "1" ]]; then
+  rm -f "$TERMINAL_AGENT_TRAIN_PARQUET" "$TERMINAL_AGENT_VAL_PARQUET"
+fi
+
 ensure_terminal_agent_smoke_data
 check_terminal_agent_data_files
 

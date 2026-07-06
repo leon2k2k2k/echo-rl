@@ -60,7 +60,7 @@ def _task_archive(task_id: int) -> bytes:
             "task.toml",
             f"""
 [task]
-name = "echo-smoke-{task_id}"
+name = "echo/smoke-{task_id}"
 authors = [{{ name = "ECHO smoke", email = "echo-smoke@example.com" }}]
 
 [environment]
