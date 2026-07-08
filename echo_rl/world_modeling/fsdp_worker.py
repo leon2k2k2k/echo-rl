@@ -247,10 +247,15 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             return None
         return NextLatRLConfig(
             coeff=nextlat_coeff,
+            base_coeff=getattr(self.cfg.algorithm, "nextlat_base_coeff", None),
+            lambda_mse=float(getattr(self.cfg.algorithm, "nextlat_lambda_mse", 1.0)),
+            lambda_kl=float(getattr(self.cfg.algorithm, "nextlat_lambda_kl", 0.0)),
+            lambda_ce=float(getattr(self.cfg.algorithm, "nextlat_lambda_ce", 0.0)),
             mtp_horizon=int(getattr(self.cfg.algorithm, "nextlat_mtp_horizon", 1)),
             proj_factor=float(getattr(self.cfg.algorithm, "nextlat_proj_factor", 1.0)),
             bias=bool(getattr(self.cfg.algorithm, "nextlat_bias", False)),
             norm_eps=float(getattr(self.cfg.algorithm, "nextlat_norm_eps", 1e-5)),
+            logit_temperature=float(getattr(self.cfg.algorithm, "nextlat_logit_temperature", 1.0) or 1.0),
         )
 
     def _initialize_local_nextlat_dynamics(self, model_path) -> None:
@@ -273,27 +278,65 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
             device=str(base_param.device),
         )
 
+    def _policy_fsdp_root(self):
+        return getattr(self.model, "model", None)
+
+    def _policy_lm_head(self):
+        for module in (
+            getattr(self.model, "model", None),
+            getattr(getattr(self.model, "model", None), "_fsdp_wrapped_module", None),
+            self.model,
+        ):
+            if module is None:
+                continue
+            if hasattr(module, "get_output_embeddings"):
+                lm_head = module.get_output_embeddings()
+                if lm_head is not None:
+                    return lm_head
+            if hasattr(module, "lm_head"):
+                return module.lm_head
+        raise RuntimeError("NextLat KL/CE requires a policy LM head, but none was found.")
+
     def _add_local_nextlat_optimizer_group(self, dynamics_model: NextLatDynamicsModel) -> None:
         if self.optimizer is None:
             return
         base_group = self.optimizer.param_groups[0]
         base_lr = base_group.get("initial_lr", base_group.get("lr", 0.0))
+        nextlat_lr = getattr(self.cfg.algorithm, "nextlat_lr", None)
+        if nextlat_lr is None:
+            nextlat_lr = base_group.get("lr", base_lr)
+        else:
+            nextlat_lr = float(nextlat_lr)
+        nextlat_weight_decay = getattr(self.cfg.algorithm, "nextlat_weight_decay", None)
+        if nextlat_weight_decay is None:
+            nextlat_weight_decay = base_group.get("weight_decay", 0.0)
+        else:
+            nextlat_weight_decay = float(nextlat_weight_decay)
         self.optimizer.add_param_group(
             {
                 "params": list(dynamics_model.parameters()),
-                "lr": base_group.get("lr", base_lr),
-                "initial_lr": base_lr,
+                "lr": nextlat_lr,
+                "initial_lr": nextlat_lr,
+                "weight_decay": nextlat_weight_decay,
             }
+        )
+        self._policy_rank_log(
+            "nextlat_optimizer_group",
+            lr=nextlat_lr,
+            initial_lr=nextlat_lr,
+            weight_decay=nextlat_weight_decay,
+            base_lr=base_group.get("lr", base_lr),
+            base_weight_decay=base_group.get("weight_decay", None),
         )
         scheduler = getattr(self, "scheduler", None)
         if scheduler is None:
             return
         if hasattr(scheduler, "base_lrs"):
-            scheduler.base_lrs.append(base_lr)
+            scheduler.base_lrs.append(nextlat_lr)
         if hasattr(scheduler, "lr_lambdas") and scheduler.lr_lambdas:
             scheduler.lr_lambdas.append(scheduler.lr_lambdas[0])
         if hasattr(scheduler, "_last_lr"):
-            scheduler._last_lr.append(self.optimizer.param_groups[-1].get("lr", base_lr))
+            scheduler._last_lr.append(self.optimizer.param_groups[-1].get("lr", nextlat_lr))
 
     def initialize_aux_policy_modules(self, wrapped_model, model_config) -> None:
         nextlat_cfg = self._build_nextlat_config()
@@ -390,6 +433,7 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
         nextlat_metrics: Dict[str, Any] = {}
         nextlat_coeff = float(getattr(loss_config, "nextlat_coeff", 0.0) or 0.0)
         nextlat_mask = extras.get("nextlat_loss_mask")
+        nextlat_base_reward_gate = extras.get("nextlat_base_reward_gate")
         if nextlat_coeff > 0:
             if nextlat_mask is None:
                 raise RuntimeError("nextlat_coeff > 0 requires nextlat_loss_mask in the training batch.")
@@ -400,10 +444,15 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 raise RuntimeError("NextLat MSE currently requires sequence_parallel_size=1.")
             nextlat_cfg = NextLatRLConfig(
                 coeff=nextlat_coeff,
+                base_coeff=getattr(loss_config, "nextlat_base_coeff", None),
+                lambda_mse=float(getattr(loss_config, "nextlat_lambda_mse", 1.0)),
+                lambda_kl=float(getattr(loss_config, "nextlat_lambda_kl", 0.0)),
+                lambda_ce=float(getattr(loss_config, "nextlat_lambda_ce", 0.0)),
                 mtp_horizon=int(getattr(loss_config, "nextlat_mtp_horizon", 1)),
                 proj_factor=float(getattr(loss_config, "nextlat_proj_factor", 1.0)),
                 bias=bool(getattr(loss_config, "nextlat_bias", False)),
                 norm_eps=float(getattr(loss_config, "nextlat_norm_eps", 1e-5)),
+                logit_temperature=float(getattr(loss_config, "nextlat_logit_temperature", 1.0) or 1.0),
             )
             nextlat_token_mask = build_nextlat_token_mask(
                 nextlat_mask,
@@ -416,11 +465,37 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 model_output=model_output,
                 nextlat_token_mask=nextlat_token_mask,
                 config=nextlat_cfg,
+                base_reward_gate=nextlat_base_reward_gate
+                if bool(getattr(loss_config, "nextlat_base_reward_gate", False))
+                else None,
+                lm_head=self._policy_lm_head()
+                if (
+                    float(getattr(loss_config, "nextlat_lambda_kl", 0.0) or 0.0) != 0.0
+                    or float(getattr(loss_config, "nextlat_lambda_ce", 0.0) or 0.0) != 0.0
+                )
+                else None,
+                sequences=sequences,
+                fsdp_model=self._policy_fsdp_root()
+                if (
+                    float(getattr(loss_config, "nextlat_lambda_kl", 0.0) or 0.0) != 0.0
+                    or float(getattr(loss_config, "nextlat_lambda_ce", 0.0) or 0.0) != 0.0
+                )
+                else None,
             )
             self._policy_rank_log(
                 "nextlat_loss_done",
                 nextlat_loss_scaled=self._scalar_for_log(nextlat_scaled),
                 nextlat_loss_unscaled=self._scalar_for_log(nextlat_metrics.get("nextlat_loss_unscaled")),
+                nextlat_base_coeff=self._scalar_for_log(nextlat_metrics.get("nextlat_base_coeff")),
+                nextlat_base_grad_scale=self._scalar_for_log(nextlat_metrics.get("nextlat_base_grad_scale")),
+                nextlat_base_grad_scale_min=self._scalar_for_log(nextlat_metrics.get("nextlat_base_grad_scale_min")),
+                nextlat_base_grad_scale_max=self._scalar_for_log(nextlat_metrics.get("nextlat_base_grad_scale_max")),
+                nextlat_base_reward_gate_mean=self._scalar_for_log(
+                    nextlat_metrics.get("nextlat_base_reward_gate_mean")
+                ),
+                nextlat_smooth_l1=self._scalar_for_log(nextlat_metrics.get("nextlat_smooth_l1")),
+                nextlat_kl_loss=self._scalar_for_log(nextlat_metrics.get("nextlat_kl_loss")),
+                nextlat_token_ce=self._scalar_for_log(nextlat_metrics.get("nextlat_token_ce")),
                 nextlat_tokens=self._scalar_for_log(nextlat_metrics.get("nextlat_tokens_selected")),
             )
 
@@ -486,6 +561,12 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 "zero_world_tokens": self._scalar_for_log(world_metrics.get("world_zero_token")),
                 "world_policy_ratio": self._scalar_for_log(world_metrics.get("world_policy_loss_ratio")),
                 "nextlat_loss_scaled": self._scalar_for_log(world_metrics.get("nextlat_loss_scaled")),
+                "nextlat_smooth_l1": self._scalar_for_log(world_metrics.get("nextlat_smooth_l1")),
+                "nextlat_kl_loss": self._scalar_for_log(world_metrics.get("nextlat_kl_loss")),
+                "nextlat_token_ce": self._scalar_for_log(world_metrics.get("nextlat_token_ce")),
+                "nextlat_base_reward_gate_mean": self._scalar_for_log(
+                    world_metrics.get("nextlat_base_reward_gate_mean")
+                ),
                 "nextlat_ratio": self._scalar_for_log(world_metrics.get("nextlat_policy_loss_ratio")),
             }
             logger.info(

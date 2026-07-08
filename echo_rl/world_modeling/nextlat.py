@@ -7,14 +7,24 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+try:
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+except ImportError:  # pragma: no cover - FSDP is optional in local unit tests.
+    FSDP = None
+
 
 @dataclass
 class NextLatRLConfig:
     coeff: float = 0.0
+    base_coeff: Optional[float] = None
+    lambda_mse: float = 1.0
+    lambda_kl: float = 0.0
+    lambda_ce: float = 0.0
     mtp_horizon: int = 1
     proj_factor: float = 1.0
     bias: bool = False
     norm_eps: float = 1e-5
+    logit_temperature: float = 1.0
 
 
 class BiasOptionalLayerNorm(nn.Module):
@@ -93,12 +103,85 @@ def align_nextlat_token_mask(nextlat_token_mask: torch.Tensor, *, sequence_lengt
     return F.pad(nextlat_token_mask, (pad_width, 0), value=False)
 
 
+def masked_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    if not (targets != -100).any():
+        return logits.sum() * 0.0
+    return F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        targets.reshape(-1),
+        ignore_index=-100,
+        reduction="mean",
+    )
+
+
+def categorical_kl_loss(
+    teacher_logits: torch.Tensor,
+    student_logits: torch.Tensor,
+    token_pred_mask: torch.Tensor,
+) -> torch.Tensor:
+    if not token_pred_mask.any():
+        return student_logits.sum() * 0.0
+    log_teacher = F.log_softmax(teacher_logits, dim=-1)
+    log_student = F.log_softmax(student_logits, dim=-1)
+    kl_pointwise = F.kl_div(log_student, log_teacher, log_target=True, reduction="none")
+    kl_per_token = kl_pointwise.sum(dim=-1)
+    mask = token_pred_mask.to(dtype=kl_per_token.dtype)
+    return (kl_per_token * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def _lm_head_linear_detached(
+    lm_head: nn.Module,
+    hidden_states: torch.Tensor,
+    *,
+    fsdp_model: nn.Module | None = None,
+    expected_vocab_size: int | None = None,
+) -> torch.Tensor:
+    def snapshot_current_weight(clone: bool) -> tuple[torch.Tensor, torch.Tensor | None]:
+        weight = lm_head.weight.detach()
+        bias = getattr(lm_head, "bias", None)
+        if bias is not None:
+            bias = bias.detach()
+        if clone:
+            weight = weight.clone()
+            if bias is not None:
+                bias = bias.clone()
+        return weight, bias
+
+    if fsdp_model is not None:
+        if FSDP is None:
+            raise RuntimeError("FSDP auxiliary LM-head projection requires torch.distributed.fsdp.")
+        with FSDP.summon_full_params(fsdp_model, recurse=False, writeback=False):
+            weight, bias = snapshot_current_weight(clone=True)
+    else:
+        weight, bias = snapshot_current_weight(clone=False)
+
+    if weight.dim() != 2 or (expected_vocab_size is not None and weight.size(0) != expected_vocab_size):
+        raise RuntimeError(
+            "Auxiliary LM-head projection did not materialize the full output weight. "
+            "Check the FSDP wrapping policy for the output embedding."
+        )
+    return F.linear(hidden_states.to(device=weight.device, dtype=weight.dtype), weight, bias)
+
+
+def _get_output_logits(model_output: Any) -> torch.Tensor:
+    logits = getattr(model_output, "logits", None)
+    if logits is None and isinstance(model_output, dict):
+        logits = model_output.get("logits")
+    if logits is None:
+        raise RuntimeError("NextLat KL/CE requires logits from the same policy forward.")
+    return logits
+
+
 def compute_nextlat_mse_loss(
     dynamics_model: NextLatDynamicsModel,
     *,
     model_output: Any,
     nextlat_token_mask: torch.Tensor,
     config: NextLatRLConfig,
+    base_reward_gate: Optional[torch.Tensor] = None,
+    lm_head: Optional[nn.Module] = None,
+    sequences: Optional[torch.Tensor] = None,
+    fsdp_model: Optional[nn.Module] = None,
 ) -> Tuple[Optional[torch.Tensor], dict[str, torch.Tensor]]:
     if config.coeff <= 0:
         return None, {}
@@ -131,16 +214,61 @@ def compute_nextlat_mse_loss(
             "nextlat_smooth_l1": zero.detach(),
         }
 
+    base_coeff = config.coeff if config.base_coeff is None else float(config.base_coeff)
+    if config.coeff <= 0:
+        base_grad_scale = 0.0
+    else:
+        base_grad_scale = base_coeff / config.coeff
+    base_grad_scale_tensor: torch.Tensor | float = base_grad_scale
+    reward_gate_mean = reward_gate_min = reward_gate_max = None
+    if base_reward_gate is not None:
+        gate = base_reward_gate.to(device=hidden_states.device, dtype=hidden_states.dtype).detach().clamp(0.0, 1.0)
+        if gate.ndim != 1 or gate.shape[0] != hidden_states.shape[0]:
+            raise RuntimeError(
+                f"NextLat reward gate must have shape ({hidden_states.shape[0]},), got {tuple(gate.shape)}"
+            )
+        reward_gate_mean = gate.float().mean()
+        reward_gate_min = gate.float().min()
+        reward_gate_max = gate.float().max()
+        base_grad_scale_tensor = gate.view(-1, 1, 1) * base_grad_scale
+
     next_states = hidden_states
-    pred_next_states = hidden_states
-    next_tokens = input_embeds
+    if isinstance(base_grad_scale_tensor, float) and base_grad_scale_tensor == 1.0:
+        hidden_states_for_aux = hidden_states
+        input_embeds_for_aux = input_embeds
+    else:
+        hidden_states_for_aux = hidden_states.detach() + base_grad_scale_tensor * (hidden_states - hidden_states.detach())
+        input_embeds_for_aux = input_embeds.detach() + base_grad_scale_tensor * (input_embeds - input_embeds.detach())
+    pred_next_states = hidden_states_for_aux
+    next_tokens = input_embeds_for_aux
     total_smooth_l1 = torch.zeros((), device=hidden_states.device)
+    total_kl = torch.zeros((), device=hidden_states.device)
+    token_ce_losses = []
+    compute_token_losses = config.lambda_kl != 0.0 or config.lambda_ce != 0.0
+    if compute_token_losses:
+        if lm_head is None or sequences is None:
+            raise RuntimeError("NextLat KL/CE requires lm_head and sequences.")
+        full_teacher_logits = _get_output_logits(model_output)
+        if full_teacher_logits.shape[:2] != hidden_states.shape[:2]:
+            raise RuntimeError(
+                "NextLat teacher logits must align with hidden states, "
+                f"got {tuple(full_teacher_logits.shape[:2])} and {tuple(hidden_states.shape[:2])}"
+            )
+        teacher_logits = full_teacher_logits[:, :-1]
+        target_tokens = sequences.to(device=hidden_states.device)[:, 1:]
+    else:
+        teacher_logits = None
+        target_tokens = None
 
     for _ in range(config.mtp_horizon):
         pred_next_states = pred_next_states[:, :-1]
         next_tokens = next_tokens[:, 1:]
         next_states = next_states[:, 1:]
         mse_mask = mse_mask[:, 1:]
+        if compute_token_losses:
+            assert target_tokens is not None and teacher_logits is not None
+            target_tokens = target_tokens[:, 1:]
+            teacher_logits = teacher_logits[:, 1:]
 
         pred_next_states = dynamics_model(pred_next_states, next_tokens)
         target_states = next_states.detach().to(device=pred_next_states.device, dtype=pred_next_states.dtype)
@@ -148,12 +276,58 @@ def compute_nextlat_mse_loss(
         weight = mse_mask.unsqueeze(-1).to(dtype=smooth_l1_elem.dtype)
         denom = weight.expand_as(smooth_l1_elem).sum().clamp_min(1.0)
         total_smooth_l1 = total_smooth_l1 + (smooth_l1_elem * weight).sum() / denom
+        if compute_token_losses:
+            token_pred_mask = mse_mask[:, 1:].to(device=pred_next_states.device, dtype=torch.bool)
+            pred_token_logits = _lm_head_linear_detached(
+                lm_head,
+                pred_next_states[:, :-1],
+                fsdp_model=fsdp_model,
+                expected_vocab_size=teacher_logits.size(-1),
+            )
+            logit_temperature = max(float(config.logit_temperature or 1.0), 1e-6)
+            target_tokens_for_loss = target_tokens.to(device=pred_token_logits.device)
+            teacher_logits_for_loss = teacher_logits.to(device=pred_token_logits.device)
+            token_pred_mask = token_pred_mask.to(device=pred_token_logits.device)
+            targets_masked = target_tokens_for_loss.masked_fill(~token_pred_mask, -100)
+            token_ce = masked_cross_entropy(pred_token_logits, targets_masked)
+            kl = categorical_kl_loss(
+                (teacher_logits_for_loss / logit_temperature).detach(),
+                pred_token_logits / logit_temperature,
+                token_pred_mask,
+            ) * (logit_temperature * logit_temperature)
+            total_kl = total_kl + kl
+            token_ce_losses.append(token_ce)
 
     smooth_l1 = total_smooth_l1 / config.mtp_horizon
-    scaled = config.coeff * smooth_l1
+    kl_loss = total_kl / config.mtp_horizon
+    if token_ce_losses:
+        token_ce_loss = torch.stack(token_ce_losses).mean()
+    else:
+        token_ce_loss = smooth_l1.sum() * 0.0
+    unscaled = (
+        float(config.lambda_mse) * smooth_l1
+        + float(config.lambda_kl) * kl_loss
+        + float(config.lambda_ce) * token_ce_loss
+    )
+    scaled = config.coeff * unscaled
     return scaled, {
-        "nextlat_loss_unscaled": smooth_l1,
+        "nextlat_loss_unscaled": unscaled,
         "nextlat_loss_scaled": scaled,
+        "nextlat_base_coeff": torch.tensor(base_coeff, device=hidden_states.device),
+        "nextlat_base_grad_scale": torch.as_tensor(base_grad_scale_tensor, device=hidden_states.device).float().mean(),
+        "nextlat_base_grad_scale_min": torch.as_tensor(base_grad_scale_tensor, device=hidden_states.device).float().min(),
+        "nextlat_base_grad_scale_max": torch.as_tensor(base_grad_scale_tensor, device=hidden_states.device).float().max(),
+        "nextlat_base_reward_gate_mean": reward_gate_mean
+        if reward_gate_mean is not None
+        else torch.tensor(1.0, device=hidden_states.device),
+        "nextlat_base_reward_gate_min": reward_gate_min
+        if reward_gate_min is not None
+        else torch.tensor(1.0, device=hidden_states.device),
+        "nextlat_base_reward_gate_max": reward_gate_max
+        if reward_gate_max is not None
+        else torch.tensor(1.0, device=hidden_states.device),
         "nextlat_tokens_selected": selected,
         "nextlat_smooth_l1": smooth_l1,
+        "nextlat_kl_loss": kl_loss,
+        "nextlat_token_ce": token_ce_loss,
     }

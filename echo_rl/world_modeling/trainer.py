@@ -16,9 +16,14 @@ from skyrl.train.utils import Timer
 from skyrl.train.utils.trainer_utils import zero_variance_filter
 from loguru import logger
 
+try:
+    from skyrl.train.fully_async_trainer import FullyAsyncRayPPOTrainer
+except ImportError:  # pragma: no cover - fully async SkyRL support is optional.
+    FullyAsyncRayPPOTrainer = None
 
-class EchoPPOTrainer(RayPPOTrainer):
-    """Ray PPO trainer extension that carries world-model masks as generic extras."""
+
+class EchoWorldModelingMixin:
+    """ECHO trainer hooks shared by synchronous and fully async PPO trainers."""
 
     @staticmethod
     def _policy_metric_logging_enabled() -> bool:
@@ -44,6 +49,28 @@ class EchoPPOTrainer(RayPPOTrainer):
         if hasattr(value, "to_string"):
             return str(value.to_string())
         return str(value)
+
+    @staticmethod
+    def _reward_gate_value(reward: Any) -> float:
+        if isinstance(reward, list):
+            try:
+                reward_value = float(sum(reward))
+            except TypeError:
+                reward_value = 0.0
+        else:
+            try:
+                reward_value = float(reward)
+            except (TypeError, ValueError):
+                reward_value = 0.0
+        return 1.0 if reward_value > 0.0 else 0.0
+
+    @staticmethod
+    def _correct_gate_value(correct: Any) -> float:
+        if hasattr(correct, "item"):
+            correct = correct.item()
+        if isinstance(correct, str):
+            return 1.0 if correct.lower() in {"1", "true", "yes"} else 0.0
+        return 1.0 if bool(correct) else 0.0
 
     def _log_generator_sample_summaries(self, generator_output: GeneratorOutput) -> None:
         if not self._policy_metric_logging_enabled():
@@ -96,6 +123,13 @@ class EchoPPOTrainer(RayPPOTrainer):
         sequences = data.get("sequences")
         seq_len = int(sequences.shape[1]) if sequences is not None and hasattr(sequences, "shape") else None
         boundaries = (data.metadata or {}).get("policy_mini_batch_boundaries")
+        gate = data.get("nextlat_base_reward_gate")
+        if gate is not None:
+            original_batch = len(data) - int((data.metadata or {}).get("pad_size", 0) or 0)
+            gate_for_log = gate[:original_batch] if original_batch > 0 else gate
+            gate_mean = float(gate_for_log.detach().float().mean().cpu().item()) if len(gate_for_log) else None
+        else:
+            gate_mean = None
         return {
             "batch": len(data),
             "seq_len": seq_len,
@@ -107,6 +141,7 @@ class EchoPPOTrainer(RayPPOTrainer):
             "world_warning_tokens": self._tensor_sum_for_log(data.get("world_warning_mask")),
             "world_env_tokens": self._tensor_sum_for_log(data.get("world_env_mask")),
             "nextlat_tokens": self._tensor_sum_for_log(data.get("nextlat_loss_mask")),
+            "nextlat_base_reward_gate_mean": gate_mean,
             "adv_mean": float(data["advantages"].detach().float().mean().cpu().item())
             if data.get("advantages") is not None
             else None,
@@ -143,6 +178,28 @@ class EchoPPOTrainer(RayPPOTrainer):
         world_warning_mask = right_align(generator_output.get("world_warning_masks"), "world_warning_masks")
         world_env_mask = right_align(generator_output.get("world_env_masks"), "world_env_masks")
         nextlat_loss_mask = right_align(generator_output.get("nextlat_loss_masks"), "nextlat_loss_masks")
+        nextlat_base_reward_gate = None
+        correct = generator_output.get("correct")
+        rewards = generator_output.get("rewards")
+        if correct is not None:
+            if len(correct) != len(response_ids):
+                raise AssertionError("correct must have one row per response")
+            nextlat_base_reward_gate = torch.tensor(
+                [self._correct_gate_value(value) for value in correct],
+                dtype=torch.float,
+            )
+        elif rewards is not None:
+            if len(rewards) != len(response_ids):
+                raise AssertionError("rewards must have one row per response")
+            nextlat_base_reward_gate = torch.tensor(
+                [self._reward_gate_value(reward) for reward in rewards],
+                dtype=torch.float,
+            )
+        if nextlat_base_reward_gate is not None:
+            if pad_size:
+                nextlat_base_reward_gate = torch.cat(
+                    [nextlat_base_reward_gate, torch.zeros(pad_size, dtype=nextlat_base_reward_gate.dtype)], dim=0
+                )
 
         counts = generator_output.get("world_full_observation_counts")
         world_full_observation_count = None
@@ -165,6 +222,7 @@ class EchoPPOTrainer(RayPPOTrainer):
         training_input["world_warning_mask"] = world_warning_mask
         training_input["world_env_mask"] = world_env_mask
         training_input["nextlat_loss_mask"] = nextlat_loss_mask
+        training_input["nextlat_base_reward_gate"] = nextlat_base_reward_gate
         training_input["world_full_observation_count"] = world_full_observation_count
 
         zero_pad_keys = set(training_input.metadata.get("zero_pad_keys", []))
@@ -174,6 +232,7 @@ class EchoPPOTrainer(RayPPOTrainer):
                 "world_warning_mask",
                 "world_env_mask",
                 "nextlat_loss_mask",
+                "nextlat_base_reward_gate",
                 "world_full_observation_count",
             }
         )
@@ -447,3 +506,16 @@ class EchoPPOTrainer(RayPPOTrainer):
             f"status={{{', '.join(f'{key}: {value}' for key, value in sorted(status.items()))}}}"
         )
         return status
+
+
+class EchoPPOTrainer(EchoWorldModelingMixin, RayPPOTrainer):
+    """Ray PPO trainer extension that carries world-model masks as generic extras."""
+
+
+if FullyAsyncRayPPOTrainer is not None:
+
+    class EchoFullyAsyncPPOTrainer(EchoWorldModelingMixin, FullyAsyncRayPPOTrainer):
+        """Fully async PPO trainer with ECHO world-model and NextLat hooks."""
+
+else:
+    EchoFullyAsyncPPOTrainer = None
