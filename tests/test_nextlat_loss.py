@@ -31,17 +31,18 @@ def test_align_token_ids_right_pads_to_model_sequence_length():
 
 
 def test_nextlat_dynamics_uses_qwen_style_swiglu_shape():
-    cfg = NextLatRLConfig(proj_factor=1.0, bias=False)
+    cfg = NextLatRLConfig(bias=False)
     dynamics = NextLatDynamicsModel(hidden_size=128, config=cfg)
 
     assert isinstance(dynamics.mlp, QwenStyleSwiGLUMLP)
     assert dynamics.mlp.gate_proj.in_features == 256
-    assert dynamics.mlp.gate_proj.out_features == 256
+    assert dynamics.mlp.gate_proj.out_features == 384
     assert dynamics.mlp.up_proj.in_features == 256
-    assert dynamics.mlp.up_proj.out_features == 256
-    assert dynamics.mlp.down_proj.in_features == 256
+    assert dynamics.mlp.up_proj.out_features == 384
+    assert dynamics.mlp.down_proj.in_features == 384
     assert dynamics.mlp.down_proj.out_features == 128
     assert dynamics.mlp.gate_proj.bias is None
+    assert cfg.proj_factor == 1.5
     assert cfg.norm_eps == 1e-6
 
 

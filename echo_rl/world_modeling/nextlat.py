@@ -21,7 +21,7 @@ class NextLatRLConfig:
     lambda_kl: float = 0.0
     lambda_ce: float = 0.0
     mtp_horizon: int = 1
-    proj_factor: float = 1.0
+    proj_factor: float = 1.5
     bias: bool = False
     norm_eps: float = 1e-6
     logit_temperature: float = 1.0
