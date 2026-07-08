@@ -453,6 +453,7 @@ class EchoFSDPPolicyWorkerBase(FSDPPolicyWorkerBase):
                 bias=bool(getattr(loss_config, "nextlat_bias", False)),
                 norm_eps=float(getattr(loss_config, "nextlat_norm_eps", 1e-5)),
                 logit_temperature=float(getattr(loss_config, "nextlat_logit_temperature", 1.0) or 1.0),
+                token_loss_chunk_size=int(getattr(loss_config, "nextlat_token_loss_chunk_size", 256) or 256),
             )
             nextlat_token_mask = build_nextlat_token_mask(
                 nextlat_mask,

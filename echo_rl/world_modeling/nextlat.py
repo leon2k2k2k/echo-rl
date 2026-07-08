@@ -25,6 +25,7 @@ class NextLatRLConfig:
     bias: bool = False
     norm_eps: float = 1e-5
     logit_temperature: float = 1.0
+    token_loss_chunk_size: int = 256
 
 
 class BiasOptionalLayerNorm(nn.Module):
@@ -103,6 +104,16 @@ def align_nextlat_token_mask(nextlat_token_mask: torch.Tensor, *, sequence_lengt
     return F.pad(nextlat_token_mask, (pad_width, 0), value=False)
 
 
+def align_token_ids(token_ids: torch.Tensor, *, sequence_length: int, pad_value: int = 0) -> torch.Tensor:
+    """Right-align token ids to match padded model outputs."""
+    if token_ids.shape[1] == sequence_length:
+        return token_ids
+    if token_ids.shape[1] > sequence_length:
+        return token_ids[:, -sequence_length:]
+    pad_width = sequence_length - token_ids.shape[1]
+    return F.pad(token_ids, (pad_width, 0), value=pad_value)
+
+
 def masked_cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     if not (targets != -100).any():
         return logits.sum() * 0.0
@@ -129,27 +140,27 @@ def categorical_kl_loss(
     return (kl_per_token * mask).sum() / mask.sum().clamp_min(1.0)
 
 
-def _lm_head_linear_detached(
+def _materialize_detached_tensor(tensor: torch.Tensor, *, clone: bool) -> torch.Tensor:
+    tensor = tensor.detach()
+    full_tensor = getattr(tensor, "full_tensor", None)
+    if callable(full_tensor):
+        tensor = full_tensor().detach()
+    if clone:
+        tensor = tensor.clone()
+    return tensor
+
+
+def _lm_head_snapshot_detached(
     lm_head: nn.Module,
-    hidden_states: torch.Tensor,
     *,
     fsdp_model: nn.Module | None = None,
     expected_vocab_size: int | None = None,
-) -> torch.Tensor:
-    def materialize_detached_tensor(tensor: torch.Tensor, *, clone: bool) -> torch.Tensor:
-        tensor = tensor.detach()
-        full_tensor = getattr(tensor, "full_tensor", None)
-        if callable(full_tensor):
-            tensor = full_tensor().detach()
-        if clone:
-            tensor = tensor.clone()
-        return tensor
-
+) -> tuple[torch.Tensor, torch.Tensor | None]:
     def snapshot_current_weight(clone: bool) -> tuple[torch.Tensor, torch.Tensor | None]:
-        weight = materialize_detached_tensor(lm_head.weight, clone=clone)
+        weight = _materialize_detached_tensor(lm_head.weight, clone=clone)
         bias = getattr(lm_head, "bias", None)
         if bias is not None:
-            bias = materialize_detached_tensor(bias, clone=clone)
+            bias = _materialize_detached_tensor(bias, clone=clone)
         return weight, bias
 
     if fsdp_model is not None:
@@ -165,7 +176,85 @@ def _lm_head_linear_detached(
             "Auxiliary LM-head projection did not materialize the full output weight. "
             "Check the FSDP wrapping policy for the output embedding."
         )
+    return weight, bias
+
+
+def _lm_head_linear_detached(
+    lm_head: nn.Module,
+    hidden_states: torch.Tensor,
+    *,
+    fsdp_model: nn.Module | None = None,
+    expected_vocab_size: int | None = None,
+) -> torch.Tensor:
+    weight, bias = _lm_head_snapshot_detached(
+        lm_head,
+        fsdp_model=fsdp_model,
+        expected_vocab_size=expected_vocab_size,
+    )
     return F.linear(hidden_states.to(device=weight.device, dtype=weight.dtype), weight, bias)
+
+
+def _chunked_lm_head_token_losses(
+    *,
+    lm_head: nn.Module,
+    hidden_states: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    target_tokens: torch.Tensor,
+    token_pred_mask: torch.Tensor,
+    fsdp_model: nn.Module | None,
+    logit_temperature: float,
+    chunk_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if hidden_states.shape[:2] != teacher_logits.shape[:2] or hidden_states.shape[:2] != target_tokens.shape[:2]:
+        raise RuntimeError(
+            "NextLat KL/CE tensor alignment mismatch: "
+            f"hidden={tuple(hidden_states.shape[:2])}, "
+            f"teacher={tuple(teacher_logits.shape[:2])}, "
+            f"targets={tuple(target_tokens.shape[:2])}"
+        )
+    if hidden_states.shape[:2] != token_pred_mask.shape[:2]:
+        raise RuntimeError(
+            "NextLat KL/CE mask alignment mismatch: "
+            f"hidden={tuple(hidden_states.shape[:2])}, mask={tuple(token_pred_mask.shape[:2])}"
+        )
+    if not token_pred_mask.any():
+        zero = hidden_states.sum() * 0.0
+        return zero, zero
+
+    weight, bias = _lm_head_snapshot_detached(
+        lm_head,
+        fsdp_model=fsdp_model,
+        expected_vocab_size=teacher_logits.size(-1),
+    )
+    selected_indices = token_pred_mask.reshape(-1).nonzero(as_tuple=False).squeeze(-1)
+    flat_hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
+    flat_teacher = teacher_logits.reshape(-1, teacher_logits.shape[-1]).detach()
+    flat_targets = target_tokens.reshape(-1)
+    total_tokens = selected_indices.numel()
+    chunk_size = max(1, int(chunk_size or 256))
+    total_kl = hidden_states.sum() * 0.0
+    total_ce = hidden_states.sum() * 0.0
+    temperature = max(float(logit_temperature or 1.0), 1e-6)
+
+    for start in range(0, total_tokens, chunk_size):
+        end = min(start + chunk_size, total_tokens)
+        chunk_indices = selected_indices[start:end]
+        hidden_chunk = flat_hidden.index_select(0, chunk_indices).to(device=weight.device, dtype=weight.dtype)
+        teacher_chunk = flat_teacher.index_select(0, chunk_indices).to(device=weight.device, dtype=weight.dtype)
+        target_chunk = flat_targets.index_select(0, chunk_indices).to(device=weight.device)
+        logits = F.linear(hidden_chunk, weight, bias)
+        teacher_chunk = teacher_chunk / temperature
+        student_chunk = logits / temperature
+        log_teacher = F.log_softmax(teacher_chunk, dim=-1)
+        log_student = F.log_softmax(student_chunk, dim=-1)
+        kl_pointwise = F.kl_div(log_student, log_teacher, log_target=True, reduction="none")
+        total_kl = total_kl + kl_pointwise.sum()
+        total_ce = total_ce + F.cross_entropy(logits, target_chunk, reduction="sum")
+
+    denom = torch.tensor(float(total_tokens), device=weight.device, dtype=total_kl.dtype)
+    kl = (total_kl / denom) * (temperature * temperature)
+    token_ce = total_ce / denom.to(dtype=total_ce.dtype)
+    return kl, token_ce
 
 
 def _get_output_logits(model_output: Any) -> torch.Tensor:
@@ -260,7 +349,12 @@ def compute_nextlat_mse_loss(
                 f"got {tuple(full_teacher_logits.shape[:2])} and {tuple(hidden_states.shape[:2])}"
             )
         teacher_logits = full_teacher_logits[:, :-1]
-        target_tokens = sequences.to(device=hidden_states.device)[:, 1:]
+        aligned_sequences = align_token_ids(
+            sequences.to(device=hidden_states.device),
+            sequence_length=hidden_states.shape[1],
+            pad_value=0,
+        )
+        target_tokens = aligned_sequences[:, 1:]
     else:
         teacher_logits = None
         target_tokens = None
@@ -283,23 +377,16 @@ def compute_nextlat_mse_loss(
         total_smooth_l1 = total_smooth_l1 + (smooth_l1_elem * weight).sum() / denom
         if compute_token_losses:
             token_pred_mask = mse_mask[:, 1:].to(device=pred_next_states.device, dtype=torch.bool)
-            pred_token_logits = _lm_head_linear_detached(
-                lm_head,
-                pred_next_states[:, :-1],
+            kl, token_ce = _chunked_lm_head_token_losses(
+                lm_head=lm_head,
+                hidden_states=pred_next_states[:, :-1],
+                teacher_logits=teacher_logits,
+                target_tokens=target_tokens,
+                token_pred_mask=token_pred_mask,
                 fsdp_model=fsdp_model,
-                expected_vocab_size=teacher_logits.size(-1),
+                logit_temperature=config.logit_temperature,
+                chunk_size=config.token_loss_chunk_size,
             )
-            logit_temperature = max(float(config.logit_temperature or 1.0), 1e-6)
-            target_tokens_for_loss = target_tokens.to(device=pred_token_logits.device)
-            teacher_logits_for_loss = teacher_logits.to(device=pred_token_logits.device)
-            token_pred_mask = token_pred_mask.to(device=pred_token_logits.device)
-            targets_masked = target_tokens_for_loss.masked_fill(~token_pred_mask, -100)
-            token_ce = masked_cross_entropy(pred_token_logits, targets_masked)
-            kl = categorical_kl_loss(
-                (teacher_logits_for_loss / logit_temperature).detach(),
-                pred_token_logits / logit_temperature,
-                token_pred_mask,
-            ) * (logit_temperature * logit_temperature)
             total_kl = total_kl + kl
             token_ce_losses.append(token_ce)
 

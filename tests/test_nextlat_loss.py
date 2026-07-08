@@ -7,6 +7,7 @@ from echo_rl.world_modeling.nextlat import (
     NextLatDynamicsModel,
     NextLatRLConfig,
     _lm_head_linear_detached,
+    align_token_ids,
     align_nextlat_token_mask,
     compute_nextlat_mse_loss,
 )
@@ -18,6 +19,14 @@ def test_align_nextlat_token_mask_right_trims_padding():
     aligned = align_nextlat_token_mask(mask, sequence_length=3)
 
     assert aligned.tolist() == [[True, True, False]]
+
+
+def test_align_token_ids_right_pads_to_model_sequence_length():
+    token_ids = torch.tensor([[11, 12, 13]])
+
+    aligned = align_token_ids(token_ids, sequence_length=5, pad_value=0)
+
+    assert aligned.tolist() == [[0, 0, 11, 12, 13]]
 
 
 def test_nextlat_loss_aligns_padded_mask_to_hidden_sequence_length():
@@ -205,6 +214,43 @@ def test_nextlat_kl_uses_frozen_lm_head_and_keeps_single_graph():
     assert input_embeds.grad is not None
     assert next(dynamics.parameters()).grad is not None
     assert lm_head.weight.grad is None
+    assert teacher_logits.grad is None
+
+
+def test_nextlat_kl_aligns_shorter_sequences_to_padded_hidden_states():
+    torch.manual_seed(0)
+    cfg = NextLatRLConfig(
+        coeff=0.05,
+        lambda_mse=1.0,
+        lambda_kl=1.0,
+        lambda_ce=0.5,
+        mtp_horizon=1,
+        proj_factor=1.0,
+        token_loss_chunk_size=2,
+    )
+    dynamics = NextLatDynamicsModel(hidden_size=4, config=cfg)
+    lm_head = torch.nn.Linear(4, 7, bias=False)
+
+    input_embeds = torch.randn(1, 6, 4, requires_grad=True)
+    hidden_states = torch.randn(1, 6, 4, requires_grad=True)
+    teacher_logits = torch.randn(1, 6, 7, requires_grad=True)
+    sequences = torch.randint(0, 7, (1, 4))
+    mask = torch.ones(1, 4, dtype=torch.bool)
+
+    loss, metrics = compute_nextlat_mse_loss(
+        dynamics,
+        model_output=SimpleNamespace(hidden_states=(input_embeds, hidden_states), logits=teacher_logits),
+        nextlat_token_mask=mask,
+        config=cfg,
+        lm_head=lm_head,
+        sequences=sequences,
+    )
+
+    assert loss is not None
+    assert metrics["nextlat_kl_loss"].item() >= 0.0
+    assert metrics["nextlat_token_ce"].item() > 0.0
+    loss.backward()
+    assert hidden_states.grad is not None
     assert teacher_logits.grad is None
 
 
