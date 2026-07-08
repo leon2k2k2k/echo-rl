@@ -28,6 +28,7 @@ export TERMINAL_AGENT_DATASET_LABEL="${TERMINAL_AGENT_DATASET_LABEL:-$(detect_da
 export ECHO_HOLD_ON_FAILURE="${ECHO_HOLD_ON_FAILURE:-1}"
 export ECHO_HOLD_ON_FAILURE_SECONDS="${ECHO_HOLD_ON_FAILURE_SECONDS:-3600}"
 export ECHO_LOG_POLICY_TRAIN_METRICS="${ECHO_LOG_POLICY_TRAIN_METRICS:-1}"
+export SKIP_ECHO_RUNTIME_IMPORT_CHECK="${SKIP_ECHO_RUNTIME_IMPORT_CHECK:-1}"
 
 plain_partition="${PLAIN_PARTITION:-a01}"
 echo_partition="${ECHO_PARTITION:-a01}"
@@ -88,6 +89,7 @@ echo "TERMINAL_AGENT_TRAIN_PARQUET=$TERMINAL_AGENT_TRAIN_PARQUET"
 echo "TERMINAL_AGENT_VAL_PARQUET=$TERMINAL_AGENT_VAL_PARQUET"
 echo "ECHO_HOLD_ON_FAILURE=$ECHO_HOLD_ON_FAILURE"
 echo "ECHO_HOLD_ON_FAILURE_SECONDS=$ECHO_HOLD_ON_FAILURE_SECONDS"
+echo "SKIP_ECHO_RUNTIME_IMPORT_CHECK=$SKIP_ECHO_RUNTIME_IMPORT_CHECK"
 
 submit_one "plain-pass16-baseline" "$plain_partition" "$plain_node" "echo_configs/qwen3_8b_rl_plain_pass16_baseline.yaml"
 submit_one "echo-pass16-baseline" "$echo_partition" "$echo_node" "echo_configs/qwen3_8b_rl_echo_pass16_baseline.yaml"
