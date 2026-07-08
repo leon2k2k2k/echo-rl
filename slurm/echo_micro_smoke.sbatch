@@ -44,14 +44,35 @@ export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 export ECHO_CACHE_TASK_IMAGES="${ECHO_CACHE_TASK_IMAGES:-1}"
 export ECHO_DOCKER_WHEELHOUSE="${ECHO_DOCKER_WHEELHOUSE:-$ECHO_RUNTIME_ROOT/docker_wheelhouse}"
 export ECHO_DOCKER_PIP_INDEX_URL="${ECHO_DOCKER_PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+export ECHO_DOCKER_BASE_IMAGE="${ECHO_DOCKER_BASE_IMAGE:-ubuntu:22.04}"
+export ECHO_DOCKER_BASE_IMAGE_TAR="${ECHO_DOCKER_BASE_IMAGE_TAR:-$ECHO_RUNTIME_ROOT/docker_cache/ubuntu_22_04.tar}"
+export ECHO_DOCKER_LOAD_BASE_IMAGE="${ECHO_DOCKER_LOAD_BASE_IMAGE:-1}"
+export ECHO_REQUIRE_DOCKER_BASE_IMAGE="${ECHO_REQUIRE_DOCKER_BASE_IMAGE:-0}"
 export ECHO_DOCKER_IMAGE_TAR="${ECHO_DOCKER_IMAGE_TAR:-$ECHO_RUNTIME_ROOT/docker_cache/tmax_smoke_images.tar}"
 export ECHO_DOCKER_LOAD_IMAGES="${ECHO_DOCKER_LOAD_IMAGES:-1}"
+
+if [[ "$ECHO_DOCKER_LOAD_BASE_IMAGE" == "1" && -f "$ECHO_DOCKER_BASE_IMAGE_TAR" ]]; then
+  echo "Loading Docker base image cache from $ECHO_DOCKER_BASE_IMAGE_TAR"
+  docker load -i "$ECHO_DOCKER_BASE_IMAGE_TAR"
+elif [[ -n "${ECHO_DOCKER_BASE_IMAGE_TAR:-}" ]]; then
+  echo "Docker base image cache not loaded: $ECHO_DOCKER_BASE_IMAGE_TAR not found or ECHO_DOCKER_LOAD_BASE_IMAGE=$ECHO_DOCKER_LOAD_BASE_IMAGE"
+fi
 
 if [[ "$ECHO_DOCKER_LOAD_IMAGES" == "1" && -f "$ECHO_DOCKER_IMAGE_TAR" ]]; then
   echo "Loading Docker smoke image cache from $ECHO_DOCKER_IMAGE_TAR"
   docker load -i "$ECHO_DOCKER_IMAGE_TAR"
 elif [[ -n "${ECHO_DOCKER_IMAGE_TAR:-}" ]]; then
   echo "Docker smoke image cache not loaded: $ECHO_DOCKER_IMAGE_TAR not found or ECHO_DOCKER_LOAD_IMAGES=$ECHO_DOCKER_LOAD_IMAGES"
+fi
+
+if docker image inspect "$ECHO_DOCKER_BASE_IMAGE" >/dev/null 2>&1; then
+  echo "Docker base image available: $ECHO_DOCKER_BASE_IMAGE"
+elif [[ "$ECHO_REQUIRE_DOCKER_BASE_IMAGE" == "1" ]]; then
+  echo "Required Docker base image is missing: $ECHO_DOCKER_BASE_IMAGE" >&2
+  echo "Expected cache tar: $ECHO_DOCKER_BASE_IMAGE_TAR" >&2
+  exit 1
+else
+  echo "Docker base image missing locally: $ECHO_DOCKER_BASE_IMAGE; Docker may try to pull it during task builds"
 fi
 
 bash scripts/sync_echo_to_skyrl.sh
@@ -71,6 +92,10 @@ echo "COMPOSE_DOCKER_CLI_BUILD=$COMPOSE_DOCKER_CLI_BUILD"
 echo "ECHO_CACHE_TASK_IMAGES=$ECHO_CACHE_TASK_IMAGES"
 echo "ECHO_DOCKER_WHEELHOUSE=$ECHO_DOCKER_WHEELHOUSE"
 echo "ECHO_DOCKER_PIP_INDEX_URL=$ECHO_DOCKER_PIP_INDEX_URL"
+echo "ECHO_DOCKER_BASE_IMAGE=$ECHO_DOCKER_BASE_IMAGE"
+echo "ECHO_DOCKER_BASE_IMAGE_TAR=$ECHO_DOCKER_BASE_IMAGE_TAR"
+echo "ECHO_DOCKER_LOAD_BASE_IMAGE=$ECHO_DOCKER_LOAD_BASE_IMAGE"
+echo "ECHO_REQUIRE_DOCKER_BASE_IMAGE=$ECHO_REQUIRE_DOCKER_BASE_IMAGE"
 echo "ECHO_DOCKER_IMAGE_TAR=$ECHO_DOCKER_IMAGE_TAR"
 echo "ECHO_DOCKER_LOAD_IMAGES=$ECHO_DOCKER_LOAD_IMAGES"
 
