@@ -2,6 +2,7 @@
 set -uo pipefail
 
 PARTITIONS="${PARTITIONS:-a01 h01}"
+NODES="${NODES:-}"
 GRES="${GRES:-gpu:4}"
 SRUN_IMMEDIATE="${SRUN_IMMEDIATE:-30}"
 OUTER_TIMEOUT="${OUTER_TIMEOUT:-50}"
@@ -22,6 +23,10 @@ expand_nodes() {
 
 candidate_nodes() {
   local partition="$1"
+  if [[ -n "$NODES" ]]; then
+    echo "$NODES" | tr ' ,' '\n' | awk 'NF'
+    return 0
+  fi
   sinfo -h -p "$partition" -o "%N %T" \
     | awk -v re="$NODE_STATE_RE" '$2 ~ re {print $1}' \
     | while read -r expr; do expand_nodes "$expr"; done \
@@ -51,6 +56,10 @@ probe_node() {
         gpu_count=$(nvidia-smi -L 2>/dev/null | wc -l)
         echo "gpu_count=$gpu_count"
         echo "containers=$(docker ps -q 2>/dev/null | wc -l)"
+        docker image inspect ubuntu:22.04 >/dev/null 2>&1
+        echo "ubuntu_cached=$?"
+        task_images=$(docker image ls "hb__tmax/*" --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | wc -l)
+        echo "task_images=$task_images"
       ' 2>&1
   )"
   rc=$?
@@ -64,6 +73,8 @@ probe_node() {
     grep -q "docker_rc=0" <<<"$output" && docker_status="OK"
     gpu_count="$(grep -m1 '^gpu_count=' <<<"$output" | cut -d= -f2 | tr -d ' ')"
     containers="$(grep -m1 '^containers=' <<<"$output" | cut -d= -f2 | tr -d ' ')"
+    ubuntu_cached="$(grep -m1 '^ubuntu_cached=' <<<"$output" | cut -d= -f2 | tr -d ' ')"
+    task_images="$(grep -m1 '^task_images=' <<<"$output" | cut -d= -f2 | tr -d ' ')"
     server_version="$(grep -m1 'Server Version:' <<<"$output" | sed 's/^[[:space:]]*//')"
     root_dir="$(grep -m1 'Docker Root Dir:' <<<"$output" | sed 's/^[[:space:]]*//')"
     if [[ "${gpu_count:-0}" =~ ^[0-9]+$ && "${gpu_count:-0}" -ge 4 ]]; then
@@ -80,8 +91,15 @@ probe_node() {
     fi
   fi
 
-  printf "%-4s %-6s %-11s gpu=%-2s containers=%-3s %s %s\n" \
-    "$partition" "$node" "$status" "${gpu_count:-?}" "${containers:-?}" "${server_version:-}" "${root_dir:-}"
+  if [[ "${ubuntu_cached:-?}" == "0" ]]; then
+    ubuntu_cached="yes"
+  elif [[ "${ubuntu_cached:-?}" =~ ^[0-9]+$ ]]; then
+    ubuntu_cached="no"
+  fi
+
+  printf "%-4s %-6s %-11s gpu=%-2s containers=%-3s ubuntu=%-3s task_images=%-3s %s %s\n" \
+    "$partition" "$node" "$status" "${gpu_count:-?}" "${containers:-?}" \
+    "${ubuntu_cached:-?}" "${task_images:-?}" "${server_version:-}" "${root_dir:-}"
 
   if [[ "${VERBOSE:-0}" == "1" && "$status" != "OK" ]]; then
     sed 's/^/  | /' <<<"$output"
