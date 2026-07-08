@@ -136,15 +136,20 @@ def _lm_head_linear_detached(
     fsdp_model: nn.Module | None = None,
     expected_vocab_size: int | None = None,
 ) -> torch.Tensor:
+    def materialize_detached_tensor(tensor: torch.Tensor, *, clone: bool) -> torch.Tensor:
+        tensor = tensor.detach()
+        full_tensor = getattr(tensor, "full_tensor", None)
+        if callable(full_tensor):
+            tensor = full_tensor().detach()
+        if clone:
+            tensor = tensor.clone()
+        return tensor
+
     def snapshot_current_weight(clone: bool) -> tuple[torch.Tensor, torch.Tensor | None]:
-        weight = lm_head.weight.detach()
+        weight = materialize_detached_tensor(lm_head.weight, clone=clone)
         bias = getattr(lm_head, "bias", None)
         if bias is not None:
-            bias = bias.detach()
-        if clone:
-            weight = weight.clone()
-            if bias is not None:
-                bias = bias.clone()
+            bias = materialize_detached_tensor(bias, clone=clone)
         return weight, bias
 
     if fsdp_model is not None:
