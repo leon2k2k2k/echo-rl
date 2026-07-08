@@ -56,7 +56,7 @@ combined_logs=()
 [[ -f "$err_log" ]] && combined_logs+=("$err_log")
 
 output_dir="$(
-  grep -ah '^OUTPUT_DIR=' "${combined_logs[@]}" 2>/dev/null \
+  grep -ah '^OUTPUT_DIR=/' "${combined_logs[@]}" 2>/dev/null \
     | tail -1 \
     | cut -d= -f2-
 )"
