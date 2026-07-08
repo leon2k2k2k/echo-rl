@@ -22,6 +22,19 @@ from echo_rl.world_modeling.fsdp_worker import PolicyWorker
 from echo_rl.world_modeling.trainer import EchoPPOTrainer
 
 
+def _disable_ray_dashboard_by_default() -> None:
+    if getattr(ray.init, "_echo_dashboard_default_disabled", False):
+        return
+    original_init = ray.init
+
+    def init_without_dashboard(*args, **kwargs):
+        kwargs.setdefault("include_dashboard", False)
+        return original_init(*args, **kwargs)
+
+    init_without_dashboard._echo_dashboard_default_disabled = True
+    ray.init = init_without_dashboard
+
+
 def _load_config(argv: list[str]) -> "EchoTerminalAgentSkyRLConfig":
     config_path = None
     remaining = []
@@ -232,6 +245,7 @@ def main() -> None:
         raise ValueError("trainer.algorithm.max_seq_len must be set for terminal-agent training.")
     if cfg.trainer.strategy not in ("fsdp", "fsdp2"):
         raise ValueError("ECHO hook implementation currently supports only fsdp/fsdp2.")
+    _disable_ray_dashboard_by_default()
     initialize_ray(cfg)
     ray.get(skyrl_entrypoint.remote(cfg))
 
