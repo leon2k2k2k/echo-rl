@@ -54,6 +54,9 @@ submit_one() {
     --time="$time_limit"
     --parsable
   )
+  if [[ "${SBATCH_EXCLUSIVE:-0}" == "1" ]]; then
+    sbatch_args+=(--exclusive)
+  fi
   if [[ -n "$node" ]]; then
     sbatch_args+=(--nodelist="$node")
   fi
