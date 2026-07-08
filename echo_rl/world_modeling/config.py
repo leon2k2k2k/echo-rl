@@ -38,7 +38,7 @@ class EchoAlgorithmConfig(AlgorithmConfig):
     nextlat_mtp_horizon: int = 1
     nextlat_proj_factor: float = 1.0
     nextlat_bias: bool = False
-    nextlat_norm_eps: float = 1e-5
+    nextlat_norm_eps: float = 1e-6
     nextlat_lr: Optional[float] = None
     nextlat_weight_decay: Optional[float] = None
 

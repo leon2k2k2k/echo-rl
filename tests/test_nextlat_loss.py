@@ -6,6 +6,7 @@ import torch
 from echo_rl.world_modeling.nextlat import (
     NextLatDynamicsModel,
     NextLatRLConfig,
+    QwenStyleSwiGLUMLP,
     _lm_head_linear_detached,
     align_token_ids,
     align_nextlat_token_mask,
@@ -27,6 +28,21 @@ def test_align_token_ids_right_pads_to_model_sequence_length():
     aligned = align_token_ids(token_ids, sequence_length=5, pad_value=0)
 
     assert aligned.tolist() == [[0, 0, 11, 12, 13]]
+
+
+def test_nextlat_dynamics_uses_qwen_style_swiglu_shape():
+    cfg = NextLatRLConfig(proj_factor=1.0, bias=False)
+    dynamics = NextLatDynamicsModel(hidden_size=128, config=cfg)
+
+    assert isinstance(dynamics.mlp, QwenStyleSwiGLUMLP)
+    assert dynamics.mlp.gate_proj.in_features == 256
+    assert dynamics.mlp.gate_proj.out_features == 256
+    assert dynamics.mlp.up_proj.in_features == 256
+    assert dynamics.mlp.up_proj.out_features == 256
+    assert dynamics.mlp.down_proj.in_features == 256
+    assert dynamics.mlp.down_proj.out_features == 128
+    assert dynamics.mlp.gate_proj.bias is None
+    assert cfg.norm_eps == 1e-6
 
 
 def test_nextlat_loss_aligns_padded_mask_to_hidden_sequence_length():

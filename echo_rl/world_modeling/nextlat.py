@@ -23,7 +23,7 @@ class NextLatRLConfig:
     mtp_horizon: int = 1
     proj_factor: float = 1.0
     bias: bool = False
-    norm_eps: float = 1e-5
+    norm_eps: float = 1e-6
     logit_temperature: float = 1.0
     token_loss_chunk_size: int = 32
 
@@ -44,6 +44,17 @@ class BiasOptionalLayerNorm(nn.Module):
         return F.rms_norm(input_tensor, self.weight.shape, self.weight, self.eps)
 
 
+class QwenStyleSwiGLUMLP(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, bias: bool):
+        super().__init__()
+        self.gate_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
+        self.up_proj = nn.Linear(input_dim, hidden_dim, bias=bias)
+        self.down_proj = nn.Linear(hidden_dim, output_dim, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
 class NextLatDynamicsModel(nn.Module):
     """Predict h_{t+1} from h_t and embed(x_{t+1})."""
 
@@ -54,13 +65,7 @@ class NextLatDynamicsModel(nn.Module):
         hidden_dim = max(128, 128 * round(hidden_dim / 128))
 
         self.norm_x = BiasOptionalLayerNorm(input_dim, bias=config.bias, eps=config.norm_eps)
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim, bias=config.bias),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim, bias=config.bias),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_size, bias=config.bias),
-        )
+        self.mlp = QwenStyleSwiGLUMLP(input_dim, hidden_dim, hidden_size, bias=config.bias)
         self.apply(self._init_weights)
 
     @staticmethod
