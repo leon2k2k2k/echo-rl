@@ -6,6 +6,7 @@ import torch
 from echo_rl.world_modeling.nextlat import (
     NextLatDynamicsModel,
     NextLatRLConfig,
+    _lm_head_linear_detached,
     align_nextlat_token_mask,
     compute_nextlat_mse_loss,
 )
@@ -205,3 +206,25 @@ def test_nextlat_kl_uses_frozen_lm_head_and_keeps_single_graph():
     assert next(dynamics.parameters()).grad is not None
     assert lm_head.weight.grad is None
     assert teacher_logits.grad is None
+
+
+def test_lm_head_projection_materializes_full_tensor_snapshot():
+    class FakeDTensor:
+        def __init__(self, local: torch.Tensor, full: torch.Tensor):
+            self.local = local
+            self.full = full
+
+        def detach(self):
+            return self
+
+        def full_tensor(self):
+            return self.full
+
+    full_weight = torch.randn(7, 4)
+    local_weight = torch.empty(0)
+    lm_head = SimpleNamespace(weight=FakeDTensor(local_weight, full_weight), bias=None)
+    hidden = torch.randn(2, 3, 4)
+
+    logits = _lm_head_linear_detached(lm_head, hidden, expected_vocab_size=7)
+
+    assert torch.allclose(logits, torch.nn.functional.linear(hidden, full_weight))
