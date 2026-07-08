@@ -14,6 +14,7 @@ source scripts/cluster_env.sh
 export PUBLIC_SEED_ROOT="${PUBLIC_SEED_ROOT:-$ECHO_RUNTIME_ROOT/data/public_seed_echo}"
 export TERMINAL_AGENT_TRAIN_PARQUET="${TERMINAL_AGENT_TRAIN_PARQUET:-$PUBLIC_SEED_ROOT/train.parquet}"
 export TERMINAL_AGENT_VAL_PARQUET="${TERMINAL_AGENT_VAL_PARQUET:-$PUBLIC_SEED_ROOT/val.parquet}"
+export TERMINAL_AGENT_DATASET_LABEL="${TERMINAL_AGENT_DATASET_LABEL:-public_seed_echo_combined}"
 export PARTITION="${PARTITION:-a01}"
 export SBATCH_GRES="${SBATCH_GRES:-gpu:4}"
 export SBATCH_TIME="${SBATCH_TIME:-02:00:00}"
@@ -28,15 +29,15 @@ check_terminal_agent_data_files
 
 case "$SMOKE_VARIANT" in
   plain)
-    export RUN_KIND="public-seed-plain-smoke"
+    export RUN_KIND="${TERMINAL_AGENT_DATASET_LABEL}-plain-smoke"
     export CONFIG_PATH="echo_configs/qwen3_8b_rl_plain_smoke.yaml"
     ;;
   echo)
-    export RUN_KIND="public-seed-echo-smoke"
+    export RUN_KIND="${TERMINAL_AGENT_DATASET_LABEL}-echo-smoke"
     export CONFIG_PATH="echo_configs/qwen3_8b_rl_echo_smoke.yaml"
     ;;
   nextlat)
-    export RUN_KIND="public-seed-nextlat-smoke"
+    export RUN_KIND="${TERMINAL_AGENT_DATASET_LABEL}-nextlat-smoke"
     export CONFIG_PATH="echo_configs/qwen3_8b_rl_nextlat_smoke.yaml"
     ;;
   *)
@@ -52,6 +53,7 @@ else
 fi
 
 echo "Public seed smoke preflight"
+echo "TERMINAL_AGENT_DATASET_LABEL=$TERMINAL_AGENT_DATASET_LABEL"
 echo "PUBLIC_SEED_ROOT=$PUBLIC_SEED_ROOT"
 echo "TERMINAL_AGENT_TRAIN_PARQUET=$TERMINAL_AGENT_TRAIN_PARQUET"
 echo "TERMINAL_AGENT_VAL_PARQUET=$TERMINAL_AGENT_VAL_PARQUET"

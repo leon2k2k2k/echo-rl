@@ -16,6 +16,15 @@ export TERMINAL_AGENT_TRAIN_PARQUET="${TERMINAL_AGENT_TRAIN_PARQUET:-${ECHO_PROB
 export TERMINAL_AGENT_VAL_PARQUET="${TERMINAL_AGENT_VAL_PARQUET:-${ECHO_PROBE_VAL_PARQUET:-$ECHO_RUNTIME_ROOT/data/tmax_echo/val.parquet}}"
 check_terminal_agent_data_files
 
+detect_dataset_label() {
+  case "$TERMINAL_AGENT_TRAIN_PARQUET" in
+    */public_seed_echo/*) echo "public_seed_echo_combined" ;;
+    */tmax_echo/*) echo "tmax_echo" ;;
+    *) basename "$(dirname "$TERMINAL_AGENT_TRAIN_PARQUET")" ;;
+  esac
+}
+
+export TERMINAL_AGENT_DATASET_LABEL="${TERMINAL_AGENT_DATASET_LABEL:-$(detect_dataset_label)}"
 export ECHO_HOLD_ON_FAILURE="${ECHO_HOLD_ON_FAILURE:-1}"
 export ECHO_HOLD_ON_FAILURE_SECONDS="${ECHO_HOLD_ON_FAILURE_SECONDS:-3600}"
 export ECHO_LOG_POLICY_TRAIN_METRICS="${ECHO_LOG_POLICY_TRAIN_METRICS:-1}"
@@ -34,7 +43,7 @@ submit_one() {
   local node="$3"
   local config_path="$4"
 
-  export RUN_KIND="$tag"
+  export RUN_KIND="${TERMINAL_AGENT_DATASET_LABEL}-${tag}"
   export RUN_ID="${RUN_KIND}-${stamp}"
   export CONFIG_PATH="$config_path"
 
@@ -74,6 +83,7 @@ submit_one() {
 }
 
 echo "Submitting pass@16 baselines"
+echo "TERMINAL_AGENT_DATASET_LABEL=$TERMINAL_AGENT_DATASET_LABEL"
 echo "TERMINAL_AGENT_TRAIN_PARQUET=$TERMINAL_AGENT_TRAIN_PARQUET"
 echo "TERMINAL_AGENT_VAL_PARQUET=$TERMINAL_AGENT_VAL_PARQUET"
 echo "ECHO_HOLD_ON_FAILURE=$ECHO_HOLD_ON_FAILURE"
@@ -88,7 +98,7 @@ Monitor:
   squeue -u "${USER:-alex}" -o "%.18i %.10P %.20j %.8T %.10M %.20R"
 
 Key progress:
-  grep -ahE "RUN_KIND=|RUN_ID=|CONFIG_PATH=|OUTPUT_DIR=|ENTRYPOINT_START=|ENTRYPOINT_DONE=|Started:|Finished:|generate_start|batch_num_seq:|batch_padded_seq_len|forward_backward_start|micro_batches|trainer_input|trainer_done|Step [0-9]+:|global_step=|avg_final_rewards|avg_pass_at_16|avg_pass_at_8|reward/|pass_at|save_checkpoint|save_checkpoints|latest_ckpt|Training done|Traceback|RuntimeError|OutOfMemory|FAILED" \
+  grep -ahE "TERMINAL_AGENT_DATASET_LABEL=|RUN_KIND=|RUN_ID=|CONFIG_PATH=|OUTPUT_DIR=|ENTRYPOINT_START=|ENTRYPOINT_DONE=|Started:|Finished:|generate_start|batch_num_seq:|batch_padded_seq_len|forward_backward_start|micro_batches|trainer_input|trainer_done|Step [0-9]+:|global_step=|avg_final_rewards|avg_pass_at_16|avg_pass_at_8|reward/|pass_at|save_checkpoint|save_checkpoints|latest_ckpt|Training done|Traceback|RuntimeError|OutOfMemory|FAILED" \
     logs/echo-rl-smoke-*.err logs/echo-rl-smoke-*.out \
     | tail -240
 
