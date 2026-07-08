@@ -76,7 +76,16 @@ echo "ECHO_DOCKER_WHEELHOUSE=$ECHO_DOCKER_WHEELHOUSE"
 echo "ECHO_DOCKER_PIP_INDEX_URL=$ECHO_DOCKER_PIP_INDEX_URL"
 echo "ECHO_DOCKER_IMAGE_TAR=$ECHO_DOCKER_IMAGE_TAR"
 echo "ECHO_DOCKER_LOAD_IMAGES=$ECHO_DOCKER_LOAD_IMAGES"
+echo "CONFIG_OVERRIDES=${CONFIG_OVERRIDES:-}"
+
+config_override_args=()
+if [[ -n "${CONFIG_OVERRIDES:-}" ]]; then
+  read -r -a config_override_args <<< "$CONFIG_OVERRIDES"
+  for i in "${!config_override_args[@]}"; do
+    echo "CONFIG_OVERRIDE_ARG[$i]=${config_override_args[$i]}"
+  done
+fi
 
 echo "ENTRYPOINT_START=$(date -Is)"
-"$PYTHON" -m echo_rl.terminal_agent.entrypoint --config "$CONFIG_PATH"
+"$PYTHON" -m echo_rl.terminal_agent.entrypoint --config "$CONFIG_PATH" "${config_override_args[@]}"
 echo "ENTRYPOINT_DONE=$(date -Is)"
