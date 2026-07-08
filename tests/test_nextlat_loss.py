@@ -42,6 +42,9 @@ def test_nextlat_dynamics_uses_qwen_style_swiglu_shape():
     assert dynamics.mlp.down_proj.in_features == 384
     assert dynamics.mlp.down_proj.out_features == 128
     assert dynamics.mlp.gate_proj.bias is None
+    assert dynamics.norm_next_embed.weight.shape == (128,)
+    assert dynamics.norm_next_embed.bias is None
+    assert dynamics.norm_next_embed.eps == 1e-6
     assert cfg.proj_factor == 1.5
     assert cfg.norm_eps == 1e-6
 

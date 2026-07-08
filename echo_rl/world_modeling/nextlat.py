@@ -64,7 +64,7 @@ class NextLatDynamicsModel(nn.Module):
         hidden_dim = int(config.proj_factor * input_dim)
         hidden_dim = max(128, 128 * round(hidden_dim / 128))
 
-        self.norm_x = BiasOptionalLayerNorm(input_dim, bias=config.bias, eps=config.norm_eps)
+        self.norm_next_embed = BiasOptionalLayerNorm(hidden_size, bias=config.bias, eps=config.norm_eps)
         self.mlp = QwenStyleSwiGLUMLP(input_dim, hidden_dim, hidden_size, bias=config.bias)
         self.apply(self._init_weights)
 
@@ -79,8 +79,9 @@ class NextLatDynamicsModel(nn.Module):
         param = next(self.parameters())
         current_states = current_states.to(device=param.device, dtype=param.dtype)
         next_token_embeds = next_token_embeds.to(device=param.device, dtype=param.dtype)
+        next_token_embeds = self.norm_next_embed(next_token_embeds)
         x = torch.cat([next_token_embeds, current_states], dim=-1)
-        delta = self.mlp(self.norm_x(x))
+        delta = self.mlp(x)
         return delta + current_states
 
 
