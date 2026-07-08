@@ -52,5 +52,5 @@ else
 fi
 
 grep -Eh \
-  "RUN_KIND=|CONFIG_PATH=|OUTPUT_DIR=|Step [0-9]+:|policy_loss|final_loss|grad_norm|world_loss|world_ce|world_tokens|nextlat_|Traceback|RuntimeError|OutOfMemory|CUDA out of memory|FAILED|ModuleNotFound|FileNotFound" \
+  "RUN_KIND=|RUN_ID=|CONFIG_PATH=|OUTPUT_DIR=|ENTRYPOINT_START=|ENTRYPOINT_DONE=|Started:|Finished:|Step [0-9]+:|global_step=|avg_final_rewards|avg_pass_at_|reward/|pass_at|save_checkpoint|save_checkpoints|latest_ckpt|policy_train|trainer_input|trainer_done|forward_backward_|optim_step_|policy_loss|final_loss|grad_norm|world_loss|world_ce|world_tokens|nextlat_|verifier_done|Traceback|RuntimeError|OutOfMemory|CUDA out of memory|FAILED|ModuleNotFound|FileNotFound" \
   "${log_glob[@]}" "$@" 2>/dev/null | tail -200

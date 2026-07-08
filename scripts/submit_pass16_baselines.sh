@@ -88,7 +88,7 @@ Monitor:
   squeue -u "${USER:-alex}" -o "%.18i %.10P %.20j %.8T %.10M %.20R"
 
 Key progress:
-  grep -ahE "RUN_KIND=|RUN_ID=|CONFIG_PATH=|generate_start|batch_num_seq:|batch_padded_seq_len|forward_backward_start|micro_batches|Step [0-9]+:|avg_final_rewards|avg_pass_at_16|avg_pass_at_8|Training done|Traceback|RuntimeError|OutOfMemory|FAILED" \
+  grep -ahE "RUN_KIND=|RUN_ID=|CONFIG_PATH=|OUTPUT_DIR=|ENTRYPOINT_START=|ENTRYPOINT_DONE=|Started:|Finished:|generate_start|batch_num_seq:|batch_padded_seq_len|forward_backward_start|micro_batches|trainer_input|trainer_done|Step [0-9]+:|global_step=|avg_final_rewards|avg_pass_at_16|avg_pass_at_8|reward/|pass_at|save_checkpoint|save_checkpoints|latest_ckpt|Training done|Traceback|RuntimeError|OutOfMemory|FAILED" \
     logs/echo-rl-smoke-*.err logs/echo-rl-smoke-*.out \
     | tail -240
 
