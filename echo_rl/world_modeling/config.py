@@ -34,7 +34,7 @@ class EchoAlgorithmConfig(AlgorithmConfig):
     nextlat_lambda_kl: float = 0.0
     nextlat_lambda_ce: float = 0.0
     nextlat_logit_temperature: float = 1.0
-    nextlat_token_loss_chunk_size: int = 256
+    nextlat_token_loss_chunk_size: int = 32
     nextlat_mtp_horizon: int = 1
     nextlat_proj_factor: float = 1.0
     nextlat_bias: bool = False

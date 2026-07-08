@@ -46,6 +46,7 @@ trainer:
     nextlat_lambda_mse: 0.3
     nextlat_lambda_kl: 0.3
     nextlat_lambda_ce: 0.0
+    nextlat_token_loss_chunk_size: 32
     nextlat_mtp_horizon: 1
     nextlat_lr: 2.0e-5
     world_loss_normalization: full_observation_tokens

@@ -25,7 +25,7 @@ class NextLatRLConfig:
     bias: bool = False
     norm_eps: float = 1e-5
     logit_temperature: float = 1.0
-    token_loss_chunk_size: int = 256
+    token_loss_chunk_size: int = 32
 
 
 class BiasOptionalLayerNorm(nn.Module):
@@ -231,7 +231,7 @@ def _chunked_lm_head_token_losses(
     flat_teacher = teacher_logits.reshape(-1, teacher_logits.shape[-1]).detach()
     flat_targets = target_tokens.reshape(-1)
     total_tokens = selected_indices.numel()
-    chunk_size = max(1, int(chunk_size or 256))
+    chunk_size = max(1, int(chunk_size or 32))
     total_kl = hidden_states.sum() * 0.0
     total_ce = hidden_states.sum() * 0.0
     temperature = max(float(logit_temperature or 1.0), 1e-6)
@@ -247,8 +247,7 @@ def _chunked_lm_head_token_losses(
         student_chunk = logits / temperature
         log_teacher = F.log_softmax(teacher_chunk, dim=-1)
         log_student = F.log_softmax(student_chunk, dim=-1)
-        kl_pointwise = F.kl_div(log_student, log_teacher, log_target=True, reduction="none")
-        total_kl = total_kl + kl_pointwise.sum()
+        total_kl = total_kl + F.kl_div(log_student, log_teacher, log_target=True, reduction="sum")
         total_ce = total_ce + F.cross_entropy(logits, target_chunk, reduction="sum")
 
     denom = torch.tensor(float(total_tokens), device=weight.device, dtype=total_kl.dtype)
