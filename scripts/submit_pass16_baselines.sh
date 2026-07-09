@@ -16,6 +16,15 @@ export TERMINAL_AGENT_TRAIN_PARQUET="${TERMINAL_AGENT_TRAIN_PARQUET:-${ECHO_PROB
 export TERMINAL_AGENT_VAL_PARQUET="${TERMINAL_AGENT_VAL_PARQUET:-${ECHO_PROBE_VAL_PARQUET:-$ECHO_RUNTIME_ROOT/data/tmax_echo/val.parquet}}"
 check_terminal_agent_data_files
 
+case "$TERMINAL_AGENT_TRAIN_PARQUET" in
+  */terminal_agent_smoke_train.parquet)
+    echo "error: pass@16 baseline is pointed at smoke train parquet:" >&2
+    echo "  TERMINAL_AGENT_TRAIN_PARQUET=$TERMINAL_AGENT_TRAIN_PARQUET" >&2
+    echo "Use a pinned dataset wrapper such as scripts/submit_ubuntu22_pass16_baselines.sh." >&2
+    exit 2
+    ;;
+esac
+
 detect_dataset_label() {
   case "$TERMINAL_AGENT_TRAIN_PARQUET" in
     */ubuntu22_seed_echo/*) echo "ubuntu22_seed_echo" ;;
@@ -38,6 +47,8 @@ plain_node="${PLAIN_NODE:-}"
 echo_node="${ECHO_NODE:-}"
 time_limit="${SBATCH_TIME:-16:00:00}"
 gres="${SBATCH_GRES:-gpu:4}"
+mem="${SBATCH_MEM:-}"
+cpus_per_task="${SBATCH_CPUS_PER_TASK:-}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 
 submit_one() {
@@ -66,6 +77,12 @@ submit_one() {
     --time="$time_limit"
     --parsable
   )
+  if [[ -n "$mem" ]]; then
+    sbatch_args+=(--mem="$mem")
+  fi
+  if [[ -n "$cpus_per_task" ]]; then
+    sbatch_args+=(--cpus-per-task="$cpus_per_task")
+  fi
   if [[ "${SBATCH_EXCLUSIVE:-0}" == "1" ]]; then
     sbatch_args+=(--exclusive)
   fi
@@ -89,6 +106,12 @@ echo "Submitting pass@16 baselines"
 echo "TERMINAL_AGENT_DATASET_LABEL=$TERMINAL_AGENT_DATASET_LABEL"
 echo "TERMINAL_AGENT_TRAIN_PARQUET=$TERMINAL_AGENT_TRAIN_PARQUET"
 echo "TERMINAL_AGENT_VAL_PARQUET=$TERMINAL_AGENT_VAL_PARQUET"
+if [[ -n "$mem" ]]; then
+  echo "SBATCH_MEM=$mem"
+fi
+if [[ -n "$cpus_per_task" ]]; then
+  echo "SBATCH_CPUS_PER_TASK=$cpus_per_task"
+fi
 echo "ECHO_HOLD_ON_FAILURE=$ECHO_HOLD_ON_FAILURE"
 echo "ECHO_HOLD_ON_FAILURE_SECONDS=$ECHO_HOLD_ON_FAILURE_SECONDS"
 echo "SKIP_ECHO_RUNTIME_IMPORT_CHECK=$SKIP_ECHO_RUNTIME_IMPORT_CHECK"
