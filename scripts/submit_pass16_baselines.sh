@@ -18,6 +18,8 @@ check_terminal_agent_data_files
 
 detect_dataset_label() {
   case "$TERMINAL_AGENT_TRAIN_PARQUET" in
+    */ubuntu22_seed_echo/*) echo "ubuntu22_seed_echo" ;;
+    */endless_seed_echo/*) echo "endless_seed_echo" ;;
     */public_seed_echo/*) echo "public_seed_echo_combined" ;;
     */tmax_echo/*) echo "tmax_echo" ;;
     *) basename "$(dirname "$TERMINAL_AGENT_TRAIN_PARQUET")" ;;
