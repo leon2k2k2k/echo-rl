@@ -527,9 +527,14 @@ def _inject_docker_wheelhouse(environment_dir: Path) -> None:
         for wheel in wheels:
             shutil.copy2(wheel, local_dir / wheel.name)
 
-        dockerfile = environment_dir / "Dockerfile"
-        if dockerfile.exists():
-            text = dockerfile.read_text()
+        pytest_install = "pip3 install --no-index --find-links /tmp/echo_wheelhouse pytest"
+    else:
+        pytest_install = f"pip3 install --timeout 60 --retries 5 -i {pip_index_url} pytest"
+
+    dockerfile = environment_dir / "Dockerfile"
+    if dockerfile.exists():
+        text = dockerfile.read_text()
+        if use_wheelhouse:
             copy_line = "COPY .echo_wheelhouse /tmp/echo_wheelhouse"
             if copy_line not in text:
                 lines = text.splitlines()
@@ -539,10 +544,8 @@ def _inject_docker_wheelhouse(environment_dir: Path) -> None:
                         insert_idx = idx + 1
                 lines.insert(insert_idx, copy_line)
                 text = "\n".join(lines) + "\n"
-                dockerfile.write_text(text)
-        pytest_install = "pip3 install --no-index --find-links /tmp/echo_wheelhouse pytest"
-    else:
-        pytest_install = f"pip3 install --timeout 60 --retries 5 -i {pip_index_url} pytest"
+        text = _rewrite_pytest_installs(text, pytest_install)
+        dockerfile.write_text(text)
 
     for script_name in ("post_install.sh", "base_install.sh"):
         script = environment_dir / script_name
@@ -550,17 +553,34 @@ def _inject_docker_wheelhouse(environment_dir: Path) -> None:
             continue
         text = script.read_text()
         if use_wheelhouse:
-            text = text.replace(
-                "pip3 install pytest",
-                pytest_install,
-            )
-            text = text.replace(
-                "pip install pytest",
-                pytest_install.replace("pip3 ", "pip ", 1),
-            )
+            text = _rewrite_pytest_installs(text, pytest_install)
         else:
             text = _add_pip_mirror_to_installs(text, pip_index_url)
+            text = _rewrite_pytest_installs(text, pytest_install)
         script.write_text(text)
+
+
+def _rewrite_pytest_installs(text: str, pytest_install: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        prefix = match.group("prefix")
+        cmd = match.group("cmd")
+        replacement = pytest_install
+        if cmd in ("pip", "python -m pip"):
+            replacement = pytest_install.replace("pip3 ", "pip ", 1)
+        elif cmd == "python3 -m pip":
+            replacement = pytest_install.replace("pip3 ", "python3 -m pip ", 1)
+        return f"{prefix}{replacement}"
+
+    return re.sub(
+        r"(?P<prefix>(?:^|&&|\|\||;|\bRUN)\s*)"
+        r"(?P<cmd>pip3|pip|python3\s+-m\s+pip|python\s+-m\s+pip)"
+        r"\s+install\b"
+        r"(?:(?![;&|]).)*?"
+        r"\bpytest\b",
+        replace,
+        text,
+        flags=re.MULTILINE,
+    )
 
 
 def _add_pip_mirror_to_installs(text: str, pip_index_url: str) -> str:
