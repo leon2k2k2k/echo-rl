@@ -7,6 +7,7 @@ import argparse
 import ast
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from typing import Any
 STEP_RE = re.compile(r"Step\s+(\d+):")
 PREFIX_RE = re.compile(r"^\([^)]*\)\s*")
 ASSIGN_RE = re.compile(r"\b(RUN_KIND|RUN_ID|CONFIG_PATH|OUTPUT_DIR|TERMINAL_AGENT_TRAIN_PARQUET)=(.*)$")
+WARNING_RE = re.compile(r"\bWARNING\b.*?\s-\s(.*)$")
 
 
 def _runtime_root() -> Path:
@@ -148,6 +150,18 @@ def _extract_metadata(lines: list[str]) -> dict[str, str]:
     return metadata
 
 
+def _extract_warnings(lines: list[str]) -> Counter[str]:
+    warnings: Counter[str] = Counter()
+    for raw in lines:
+        if "WARNING" not in raw:
+            continue
+        line = _clean_line(raw)
+        match = WARNING_RE.search(line)
+        message = match.group(1).strip() if match else line
+        warnings[message] += 1
+    return warnings
+
+
 def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
     lines: list[str] = []
     existing = [path for path in paths if path.exists()]
@@ -159,6 +173,7 @@ def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
 
     steps = _parse_metric_dicts(lines)
     metadata = _extract_metadata(lines)
+    warnings = _extract_warnings(lines)
     verifier_timeout_lines = sum("verifier_timeout" in line for line in lines)
     verifier_error_lines = sum("verifier_error" in line for line in lines)
     rollout_reward_one = sum("rollout_done" in line and "reward=1.0" in line for line in lines)
@@ -168,6 +183,7 @@ def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
     return {
         "paths": existing,
         "metadata": metadata,
+        "warnings": warnings,
         "steps": steps,
         "latest": latest,
         "verifier_timeout_lines": verifier_timeout_lines,
@@ -177,7 +193,7 @@ def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
     }
 
 
-def _print_summary(label: str, summary: dict[str, Any], show_steps: bool) -> None:
+def _print_summary(label: str, summary: dict[str, Any], show_steps: bool, warning_limit: int) -> None:
     metadata = summary["metadata"]
     latest = summary["latest"]
     steps = summary["steps"]
@@ -222,6 +238,11 @@ def _print_summary(label: str, summary: dict[str, Any], show_steps: bool) -> Non
         f"verifier_timeout_lines={summary['verifier_timeout_lines']} "
         f"verifier_error_lines={summary['verifier_error_lines']}"
     )
+    warnings = summary["warnings"]
+    print(f"warnings: {sum(warnings.values())}")
+    if warning_limit > 0 and warnings:
+        for message, count in warnings.most_common(warning_limit):
+            print(f"  [{count}] {message}")
 
     if show_steps and steps:
         print("\nstep pass16 raw loss_reward timeout verr parse fmt step_s gen_s")
@@ -244,12 +265,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("jobs_or_logs", nargs="+", help="Slurm job IDs or log file paths.")
     parser.add_argument("--steps", action="store_true", help="Print per-step table.")
+    parser.add_argument("--warnings", type=int, default=5, help="Number of warning messages to print per job. Default: 5.")
     args = parser.parse_args()
 
     for item in args.jobs_or_logs:
         paths = _log_paths_for_arg(item)
         summary = _summarize_logs(paths)
-        _print_summary(item, summary, show_steps=args.steps)
+        _print_summary(item, summary, show_steps=args.steps, warning_limit=args.warnings)
 
 
 if __name__ == "__main__":
