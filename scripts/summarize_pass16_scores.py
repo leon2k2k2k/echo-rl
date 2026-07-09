@@ -8,6 +8,7 @@ import ast
 import os
 import re
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,10 @@ STEP_RE = re.compile(r"Step\s+(\d+):")
 PREFIX_RE = re.compile(r"^\([^)]*\)\s*")
 ASSIGN_RE = re.compile(r"\b(RUN_KIND|RUN_ID|CONFIG_PATH|OUTPUT_DIR|TERMINAL_AGENT_TRAIN_PARQUET)=(.*)$")
 WARNING_RE = re.compile(r"\bWARNING\b.*?\s-\s(.*)$")
+TIMESTAMP_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})(?:[,.]\d+)?")
+TOTAL_STEPS_RE = re.compile(r"Total steps:\s*(\d+)")
+PHASE_RE = re.compile(r"\b(Started|Finished): '([^']+)'")
+ROLLOUT_RE = re.compile(r"rollout_done .*?sec=([0-9.]+).*?reward=([0-9.]+)")
 
 
 def _runtime_root() -> Path:
@@ -140,6 +145,30 @@ def _fmt(value: Any, digits: int = 3) -> str:
     return f"{number:.{digits}f}"
 
 
+def _fmt_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _parse_timestamp(line: str) -> datetime | None:
+    match = TIMESTAMP_RE.search(line)
+    if not match:
+        return None
+    text = match.group(1).replace("T", " ")
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
 def _extract_metadata(lines: list[str]) -> dict[str, str]:
     metadata: dict[str, str] = {}
     for raw in lines:
@@ -162,6 +191,73 @@ def _extract_warnings(lines: list[str]) -> Counter[str]:
     return warnings
 
 
+def _extract_progress(lines: list[str], steps: list[dict[str, Any]]) -> dict[str, Any]:
+    first_ts: datetime | None = None
+    last_ts: datetime | None = None
+    total_steps: int | None = None
+    last_phase: str | None = None
+    active_phase: str | None = None
+    rollout_secs: list[float] = []
+    last_rollout_reward: float | None = None
+
+    for raw in lines:
+        line = _clean_line(raw)
+        timestamp = _parse_timestamp(line)
+        if timestamp is not None:
+            first_ts = first_ts or timestamp
+            last_ts = timestamp
+
+        match = TOTAL_STEPS_RE.search(line)
+        if match:
+            total_steps = int(match.group(1))
+
+        match = PHASE_RE.search(line)
+        if match:
+            action, phase = match.groups()
+            last_phase = f"{action.lower()}:{phase}"
+            active_phase = phase if action == "Started" else None
+
+        match = ROLLOUT_RE.search(line)
+        if match:
+            rollout_secs.append(float(match.group(1)))
+            last_rollout_reward = float(match.group(2))
+
+    completed_steps = len(steps)
+    latest_step = steps[-1].get("_step") if steps else None
+    step_times = [_to_float(step.get("timing/step")) for step in steps]
+    step_times = [value for value in step_times if value is not None and value > 0]
+    recent_step_times = step_times[-5:]
+    avg_step_sec = sum(recent_step_times) / len(recent_step_times) if recent_step_times else None
+    remaining_steps = None
+    eta_sec = None
+    if total_steps is not None:
+        # The tracking step number can be implementation-dependent, so use
+        # parsed metric dictionaries as the conservative completed count.
+        remaining_steps = max(0, total_steps - completed_steps)
+        if avg_step_sec is not None:
+            eta_sec = remaining_steps * avg_step_sec
+
+    elapsed_sec = (last_ts - first_ts).total_seconds() if first_ts and last_ts else None
+    avg_rollout_sec = sum(rollout_secs) / len(rollout_secs) if rollout_secs else None
+
+    return {
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "elapsed_sec": elapsed_sec,
+        "total_steps": total_steps,
+        "completed_steps": completed_steps,
+        "latest_step": latest_step,
+        "remaining_steps": remaining_steps,
+        "avg_step_sec": avg_step_sec,
+        "eta_sec": eta_sec,
+        "last_phase": last_phase,
+        "active_phase": active_phase,
+        "rollout_count": len(rollout_secs),
+        "avg_rollout_sec": avg_rollout_sec,
+        "last_rollout_reward": last_rollout_reward,
+    }
+
+
 def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
     lines: list[str] = []
     existing = [path for path in paths if path.exists()]
@@ -174,6 +270,7 @@ def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
     steps = _parse_metric_dicts(lines)
     metadata = _extract_metadata(lines)
     warnings = _extract_warnings(lines)
+    progress = _extract_progress(lines, steps)
     verifier_timeout_lines = sum("verifier_timeout" in line for line in lines)
     verifier_error_lines = sum("verifier_error" in line for line in lines)
     rollout_reward_one = sum("rollout_done" in line and "reward=1.0" in line for line in lines)
@@ -184,6 +281,7 @@ def _summarize_logs(paths: list[Path]) -> dict[str, Any]:
         "paths": existing,
         "metadata": metadata,
         "warnings": warnings,
+        "progress": progress,
         "steps": steps,
         "latest": latest,
         "verifier_timeout_lines": verifier_timeout_lines,
@@ -197,6 +295,7 @@ def _print_summary(label: str, summary: dict[str, Any], show_steps: bool, warnin
     metadata = summary["metadata"]
     latest = summary["latest"]
     steps = summary["steps"]
+    progress = summary["progress"]
 
     print(f"\n== {label} ==")
     if metadata.get("RUN_KIND"):
@@ -211,6 +310,29 @@ def _print_summary(label: str, summary: dict[str, Any], show_steps: bool, warnin
 
     print(f"logs:     {', '.join(str(path) for path in summary['paths'])}")
     print(f"steps:    {len(steps)}")
+    if progress["first_ts"] or progress["last_ts"] or progress["total_steps"] is not None:
+        first_ts = progress["first_ts"].strftime("%H:%M:%S") if progress["first_ts"] else "-"
+        last_ts = progress["last_ts"].strftime("%H:%M:%S") if progress["last_ts"] else "-"
+        total_steps = progress["total_steps"] if progress["total_steps"] is not None else "?"
+        completed_steps = progress["completed_steps"]
+        remaining_steps = progress["remaining_steps"] if progress["remaining_steps"] is not None else "?"
+        print(
+            "progress: "
+            f"{completed_steps}/{total_steps} metric_steps "
+            f"remaining={remaining_steps} "
+            f"elapsed={_fmt_duration(progress['elapsed_sec'])} "
+            f"eta={_fmt_duration(progress['eta_sec'])} "
+            f"avg_step={_fmt(progress['avg_step_sec'], 1)}s "
+            f"log_window={first_ts}->{last_ts}"
+        )
+        print(
+            "phase:    "
+            f"active={progress['active_phase'] or '-'} "
+            f"last={progress['last_phase'] or '-'} "
+            f"rollouts={progress['rollout_count']} "
+            f"avg_rollout={_fmt(progress['avg_rollout_sec'], 1)}s "
+            f"last_rollout_reward={_fmt(progress['last_rollout_reward'], 1)}"
+        )
     if latest:
         print(
             "latest:   "
