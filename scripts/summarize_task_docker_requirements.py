@@ -41,6 +41,10 @@ def _read_member(task_binary: bytes, name: str) -> str:
         return member.read().decode("utf-8", errors="replace")
 
 
+def _normalize_shell(text: str) -> str:
+    return text.replace("\\\n", " ")
+
+
 def _clean_packages(raw: str) -> list[str]:
     raw = raw.replace("\\\n", " ")
     tokens = []
@@ -58,6 +62,7 @@ def _clean_packages(raw: str) -> list[str]:
 
 def _summarize_row(idx: int, row: dict) -> DockerSummary:
     dockerfile = _read_member(bytes(row["task_binary"]), "environment/Dockerfile")
+    docker_shell = _normalize_shell(dockerfile)
     base_images = []
     apt_packages = []
     pip_packages = []
@@ -65,10 +70,10 @@ def _summarize_row(idx: int, row: dict) -> DockerSummary:
         from_match = FROM_RE.search(line)
         if from_match:
             base_images.append(from_match.group(1))
-        for match in APT_RE.finditer(line):
-            apt_packages.extend(_clean_packages(match.group(1)))
-        for match in PIP_RE.finditer(line):
-            pip_packages.extend(_clean_packages(match.group(1)))
+    for match in APT_RE.finditer(docker_shell):
+        apt_packages.extend(_clean_packages(match.group(1)))
+    for match in PIP_RE.finditer(docker_shell):
+        pip_packages.extend(_clean_packages(match.group(1)))
 
     lowered = dockerfile.lower()
     has_curl_or_wget = bool(re.search(r"\b(curl|wget)\b", lowered))
